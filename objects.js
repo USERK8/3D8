@@ -110,4 +110,12 @@ export class ObjectManager {
   getSelected()     { return this.selected; }
   getObjects()      { return this.objects; }
   getObjectCount()  { return this.objects.length; }
+
+  // Returns a THREE.Group of all meshes — safe to pass to exporters
+  // (excludes grid, lights, helpers)
+  _exportGroup(THREE) {
+    const group = new THREE.Group();
+    this.objects.forEach(obj => group.add(obj.clone()));
+    return group;
+  }
 }
