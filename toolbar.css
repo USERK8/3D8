@@ -1,16 +1,16 @@
-
-/* toolbar top-center */
+/* toolbar left-center */
 #toolbar {
   position: fixed; 
-  top: 12px; 
-  left: 50%; 
-  transform: translateX(-50%);
+  top: 50%; 
+  left: 12px; 
+  transform: translateY(-50%); /* Centers it vertically */
   display: flex; 
-  gap: 4px;
+  flex-direction: column; /* Stacks buttons vertically */
+  gap: 6px;
   background: rgba(28,28,28,0.92); 
   border: 1px solid #333;
   border-radius: 5px; 
-  padding: 5px 8px;
+  padding: 8px 5px;
 }
 
 .tool-btn {
@@ -18,7 +18,7 @@
   border: 1px solid #3a3a3a; 
   color: #aaa;
   border-radius: 4px; 
-  padding: 5px 12px; 
+  padding: 8px 12px; 
   font-size: 11px;
   font-family: 'Courier New', monospace; 
   cursor: pointer;
@@ -31,7 +31,7 @@
 }
 
 .tool-btn.active { 
-  background: #e8a838; 
-  color: #111; 
-  border-color: #e8a838; 
+  background: #ff0033; /* Dark Neon Red */
+  color: #fff; 
+  border-color: #ff0033; 
 }
