@@ -1,17 +1,10 @@
 import * as THREE from 'three';
 
-// Materials
+// Clean white for default objects
 const MAT_DEFAULT = new THREE.MeshStandardMaterial({ 
-  color: 0xe8a838, 
-  roughness: 0.6, 
+  color: 0xffffff, 
+  roughness: 0.3, 
   metalness: 0.1 
-});
-
-const MAT_SELECTED = new THREE.MeshStandardMaterial({ 
-  color: 0xff6600, 
-  roughness: 0.4, 
-  metalness: 0.2, 
-  emissive: 0x331100 
 });
 
 export class ObjectManager {
@@ -25,26 +18,13 @@ export class ObjectManager {
   addObject(type) {
     let geo;
     switch(type) {
-      case 'cube':     
-        geo = new THREE.BoxGeometry(1, 1, 1); 
-        break;
-      case 'sphere':   
-        geo = new THREE.SphereGeometry(0.6, 32, 16); 
-        break;
-      case 'cylinder': 
-        geo = new THREE.CylinderGeometry(0.5, 0.5, 1, 32); 
-        break;
-      case 'cone':     
-        geo = new THREE.ConeGeometry(0.5, 1, 32); 
-        break;
-      case 'torus':    
-        geo = new THREE.TorusGeometry(0.5, 0.2, 16, 48); 
-        break;
-      case 'plane':    
-        geo = new THREE.PlaneGeometry(2, 2); 
-        break;
-      default:         
-        geo = new THREE.BoxGeometry(1, 1, 1);
+      case 'cube':     geo = new THREE.BoxGeometry(1, 1, 1); break;
+      case 'sphere':   geo = new THREE.SphereGeometry(0.6, 32, 16); break;
+      case 'cylinder': geo = new THREE.CylinderGeometry(0.5, 0.5, 1, 32); break;
+      case 'cone':     geo = new THREE.ConeGeometry(0.5, 1, 32); break;
+      case 'torus':    geo = new THREE.TorusGeometry(0.5, 0.2, 16, 48); break;
+      case 'plane':    geo = new THREE.PlaneGeometry(2, 2); break;
+      default:         geo = new THREE.BoxGeometry(1, 1, 1);
     }
 
     const mesh = new THREE.Mesh(geo, MAT_DEFAULT.clone());
@@ -52,14 +32,11 @@ export class ObjectManager {
     mesh.receiveShadow = true;
     mesh.userData.name = type + '_' + (++this.objectCount);
     
-    // FIXED: Always spawn at origin (0, 0, 0)
-    // For plane, rotate to lay flat on XY plane
     if (type === 'plane') { 
-      mesh.rotation.x = 0; // Flat on XY plane (Z is up now)
+      mesh.rotation.x = 0; 
       mesh.position.set(0, 0, 0);
     } else {
-      // All other objects spawn at exact center
-      mesh.position.set(0, 0, 0.5); // Slightly above ground
+      mesh.position.set(0, 0, 0.5); 
     }
     
     this.scene.add(mesh);
@@ -77,29 +54,22 @@ export class ObjectManager {
   }
 
   selectObject(obj) {
-    // Deselect old
+    // Revert old selection back to white
     if (this.selected) {
-      this.selected.material.color.set(0xe8a838);
+      this.selected.material.color.set(0xffffff);
       this.selected.material.emissive.set(0x000000);
     }
     
     this.selected = obj;
     
+    // Highlight new selection with Dark Neon Red
     if (this.selected) {
-      this.selected.material.color.set(0xff6600);
-      this.selected.material.emissive.set(0x331100);
+      this.selected.material.color.set(0xff0033);
+      this.selected.material.emissive.set(0x440011); // Slight red glow
     }
   }
 
-  getSelected() {
-    return this.selected;
-  }
-
-  getObjects() {
-    return this.objects;
-  }
-
-  getObjectCount() {
-    return this.objects.length;
-  }
+  getSelected() { return this.selected; }
+  getObjects() { return this.objects; }
+  getObjectCount() { return this.objects.length; }
 }
