@@ -152,6 +152,10 @@
 .export-btn { color: #6af !important; border-color: rgba(100,170,255,0.2) !important; }
 .export-btn:hover { background: rgba(100,170,255,0.1) !important; color: #9cf !important; }
 
+/* ── NEW: Import button styles ── */
+.import-btn { color: #6fa !important; border-color: rgba(100,255,170,0.2) !important; }
+.import-btn:hover { background: rgba(100,255,170,0.1) !important; color: #9fc !important; }
+
 /* toast notification */
 .export-toast {
   position: fixed;
