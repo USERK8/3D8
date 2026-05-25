@@ -1,10 +1,9 @@
 import * as THREE from 'three';
 
-// Clean white for default objects
-const MAT_DEFAULT = new THREE.MeshStandardMaterial({ 
-  color: 0xffffff, 
-  roughness: 0.3, 
-  metalness: 0.1 
+const MAT_DEFAULT = new THREE.MeshStandardMaterial({
+  color: 0xffffff,
+  roughness: 0.3,
+  metalness: 0.1
 });
 
 export class ObjectManager {
@@ -13,6 +12,15 @@ export class ObjectManager {
     this.objects = [];
     this.selected = null;
     this.objectCount = 0;
+  }
+
+  // Returns a unique name: if "cube" exists, returns "cube (1)", "cube (2)" etc.
+  _uniqueName(baseName) {
+    const existing = new Set(this.objects.map(o => o.userData.name));
+    if (!existing.has(baseName)) return baseName;
+    let i = 1;
+    while (existing.has(`${baseName} (${i})`)) i++;
+    return `${baseName} (${i})`;
   }
 
   addObject(type) {
@@ -30,46 +38,76 @@ export class ObjectManager {
     const mesh = new THREE.Mesh(geo, MAT_DEFAULT.clone());
     mesh.castShadow = true;
     mesh.receiveShadow = true;
-    mesh.userData.name = type + '_' + (++this.objectCount);
-    
-    if (type === 'plane') { 
-      mesh.rotation.x = 0; 
+    mesh.userData.name = this._uniqueName(type);
+
+    if (type === 'plane') {
       mesh.position.set(0, 0, 0);
     } else {
-      mesh.position.set(0, 0, 0.5); 
+      mesh.position.set(0, 0, 0.5);
     }
-    
+
     this.scene.add(mesh);
     this.objects.push(mesh);
     this.selectObject(mesh);
-    
     return mesh;
   }
 
+  duplicateObject(obj) {
+    if (!obj) return null;
+    const newMesh = obj.clone();
+    // Clone gives same geometry+material refs; make material independent
+    newMesh.material = obj.material.clone();
+    newMesh.userData = { ...obj.userData };
+    // Name: strip any existing "(n)" suffix, then re-unique
+    const baseName = obj.userData.name.replace(/\s*\(\d+\)$/, '');
+    newMesh.userData.name = this._uniqueName(baseName);
+    // Offset slightly so it's visible
+    newMesh.position.set(
+      obj.position.x + 0.4,
+      obj.position.y + 0.4,
+      obj.position.z
+    );
+    this.scene.add(newMesh);
+    this.objects.push(newMesh);
+    this.selectObject(newMesh);
+    return newMesh;
+  }
+
+  // Returns null on success, or an error string if name is taken
+  renameObject(obj, newName) {
+    if (!obj) return 'No object selected';
+    const trimmed = newName.trim();
+    if (!trimmed) return 'Name cannot be empty';
+    const taken = this.objects.some(o => o !== obj && o.userData.name === trimmed);
+    if (taken) return `"${trimmed}" already exists`;
+    obj.userData.name = trimmed;
+    return null;
+  }
+
+  deleteObject(obj) {
+    if (!obj) return;
+    this.scene.remove(obj);
+    this.objects = this.objects.filter(o => o !== obj);
+    if (this.selected === obj) this.selected = null;
+  }
+
   deleteSelected() {
-    if (!this.selected) return;
-    this.scene.remove(this.selected);
-    this.objects = this.objects.filter(o => o !== this.selected);
-    this.selected = null;
+    this.deleteObject(this.selected);
   }
 
   selectObject(obj) {
-    // Revert old selection back to white
     if (this.selected) {
       this.selected.material.color.set(0xffffff);
       this.selected.material.emissive.set(0x000000);
     }
-    
     this.selected = obj;
-    
-    // Highlight new selection with Dark Neon Red
     if (this.selected) {
       this.selected.material.color.set(0xff0033);
-      this.selected.material.emissive.set(0x440011); // Slight red glow
+      this.selected.material.emissive.set(0x440011);
     }
   }
 
-  getSelected() { return this.selected; }
-  getObjects() { return this.objects; }
-  getObjectCount() { return this.objects.length; }
+  getSelected()     { return this.selected; }
+  getObjects()      { return this.objects; }
+  getObjectCount()  { return this.objects.length; }
 }
