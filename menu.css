@@ -98,3 +98,80 @@
   60%  { opacity: 1; }
   100% { opacity: 0; }
 }
+
+/* ── Export menu ── */
+#export-menu {
+  position: fixed;
+  background: rgba(15, 15, 22, 0.75);
+  backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px);
+  border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 8px;
+  padding: 5px 0 8px;
+  min-width: 210px;
+  display: none;
+  z-index: 500;
+  box-shadow: 0 12px 36px rgba(0,0,0,0.6);
+}
+#export-menu.visible { display: block; }
+
+.export-scope {
+  display: flex;
+  gap: 5px;
+  padding: 4px 10px 2px;
+}
+.scope-btn {
+  flex: 1;
+  background: rgba(255,255,255,0.05);
+  border: 1px solid rgba(255,255,255,0.08);
+  color: #888;
+  border-radius: 4px;
+  padding: 5px 0;
+  font-size: 10px;
+  font-family: 'Courier New', monospace;
+  cursor: pointer;
+  transition: all 0.1s;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.scope-btn:hover { background: rgba(255,255,255,0.1); color: #fff; }
+.scope-btn.active { background: #ff0033; border-color: #ff0033; color: #fff; }
+
+.fmt-desc {
+  font-size: 10px;
+  color: #555;
+  margin-left: auto;
+}
+
+/* separator in toolbar */
+.tool-sep {
+  height: 1px;
+  background: rgba(255,255,255,0.06);
+  margin: 3px 0;
+}
+
+.export-btn { color: #6af !important; border-color: rgba(100,170,255,0.2) !important; }
+.export-btn:hover { background: rgba(100,170,255,0.1) !important; color: #9cf !important; }
+
+/* toast notification */
+.export-toast {
+  position: fixed;
+  bottom: 36px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(20,20,30,0.9);
+  border: 1px solid rgba(100,170,255,0.3);
+  color: #9cf;
+  font-size: 12px;
+  font-family: 'Courier New', monospace;
+  padding: 8px 16px;
+  border-radius: 5px;
+  z-index: 600;
+  pointer-events: none;
+  animation: toastfade 2.5s forwards;
+}
+@keyframes toastfade {
+  0%   { opacity: 0; transform: translateX(-50%) translateY(6px); }
+  15%  { opacity: 1; transform: translateX(-50%) translateY(0); }
+  70%  { opacity: 1; }
+  100% { opacity: 0; }
+}
