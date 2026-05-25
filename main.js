@@ -195,8 +195,10 @@ function hideContextMenu() {
 // Rename
 document.getElementById('ctx-rename').addEventListener('click', () => {
   if (!ctxTarget) return;
+  const target = ctxTarget; // capture before hideContextMenu nulls it
   hideContextMenu();
-  startInlineRename(ctxTarget);
+  // setTimeout lets the menu DOM removal finish before we inject the input
+  setTimeout(() => startInlineRename(target), 0);
 });
 
 // Duplicate
@@ -277,15 +279,19 @@ function startInlineRename(obj) {
     updateUI();
   }
 
+  let committed = false;
+
   input.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter')  { e.preventDefault(); commit(); }
-    if (e.key === 'Escape') { updateUI(); } // cancel — just rebuild
     e.stopPropagation(); // don't fire G/R/S shortcuts while typing
+    if (e.key === 'Enter')  { e.preventDefault(); committed = true; commit(); }
+    if (e.key === 'Escape') { committed = true; updateUI(); } // cancel
   });
 
   input.addEventListener('blur', () => {
-    // If value unchanged or blank, just cancel
-    if (input.value.trim() === obj.userData.name || !input.value.trim()) {
+    if (committed) return; // already handled by keydown
+    committed = true;
+    // Blank or unchanged = cancel silently
+    if (!input.value.trim() || input.value.trim() === obj.userData.name) {
       updateUI();
     } else {
       commit();
