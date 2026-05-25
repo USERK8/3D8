@@ -10,6 +10,7 @@ const canvas = document.getElementById('viewport');
 const scene = createScene();
 const camera = createCamera();
 const renderer = createRenderer(canvas);
+renderer.autoClear = false;
 
 createLights(scene);
 createGrid(scene);
@@ -21,11 +22,10 @@ const clock = new THREE.Clock();
 const undoStack = [];
 let dragStartState = null;
 
-// --- GIZMO AT TOP RIGHT FIX ---
+// --- GIZMO SETUP ---
 const gizmoCanvas = document.getElementById('gizmo');
-// Create a mini-renderer just for the gizmo so it stays top-right
 const gizmoRenderer = new THREE.WebGLRenderer({ canvas: gizmoCanvas, alpha: true, antialias: true });
-gizmoRenderer.setSize(128, 128);
+gizmoRenderer.setSize(120, 120);
 
 const viewHelper = new ViewHelper(camera, gizmoCanvas);
 
@@ -59,6 +59,7 @@ const fpsEl = document.getElementById('fps');
 const camInfoEl = document.getElementById('cam-info');
 const addMenu = document.getElementById('add-menu');
 const toolBtns = document.querySelectorAll('.tool-btn');
+const hListEl = document.getElementById('h-list');
 
 let currentTool = 'translate'; 
 
@@ -182,10 +183,38 @@ window.addEventListener('click', (event) => {
 
 window.addEventListener('resize', () => handleResize(camera, renderer));
 
+// --- UI UPDATER (NOW INCLUDES HIERARCHY!) ---
 function updateUI() {
   objCountEl.textContent = `Objects: ${objManager.getObjectCount()}`;
   const sel = objManager.getSelected();
   selInfoEl.textContent = sel ? `Selected: ${sel.userData.name}` : 'Nothing selected';
+
+  // Rebuild the hierarchy list
+  hListEl.innerHTML = '';
+  objManager.getObjects().forEach(obj => {
+    const div = document.createElement('div');
+    div.className = 'h-item';
+    if (sel === obj) div.classList.add('active');
+    
+    // Assign a matching icon
+    let icon = '■';
+    if (obj.userData.name.includes('sphere')) icon = '●';
+    else if (obj.userData.name.includes('cylinder')) icon = '⬡';
+    else if (obj.userData.name.includes('cone')) icon = '▲';
+    else if (obj.userData.name.includes('torus')) icon = '◎';
+    else if (obj.userData.name.includes('plane')) icon = '▬';
+
+    div.innerHTML = `<span class="ic">${icon}</span> ${obj.userData.name}`;
+    
+    // Make the hierarchy clickable!
+    div.onclick = () => {
+      objManager.selectObject(obj);
+      if (currentTool !== 'select') transformControl.attach(obj);
+      updateUI();
+    };
+    
+    hListEl.appendChild(div);
+  });
 }
 
 // --- ANIMATION LOOP ---
@@ -211,10 +240,7 @@ function animate() {
     viewHelper.update(clock.getDelta());
   }
 
-  // Render main scene normally
   renderer.render(scene, camera);
-  
-  // Render Gizmo separately in its own top-right canvas
   gizmoRenderer.clear();
   viewHelper.render(gizmoRenderer);
 }
