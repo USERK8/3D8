@@ -135,6 +135,15 @@ window.addEventListener('keydown', (e) => {
     if (e.key === 'w' || e.key === 'G') setTool('translate');
     if (e.key === 'r' || e.key === 'R') setTool('rotate');
     if (e.key === 's' || e.key === 'S') setTool('scale');
+    if (e.key === 'd' || e.key === 'D') {
+      const sel = objManager.getSelected();
+      if (sel) {
+        const dupe = objManager.duplicateObject(sel);
+        undoStack.push({ type: 'add', mesh: dupe });
+        if (currentTool !== 'select') { transformControl.attach(dupe); transformControl.setMode(currentTool); }
+        updateUI();
+      }
+    }
   }
 
   if (e.key === 'Delete' || e.key === 'Backspace') {
