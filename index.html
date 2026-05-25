@@ -17,6 +17,24 @@
   <button class="tool-btn" id="btn-move">Move (W)</button>
   <button class="tool-btn" id="btn-rotate">Rotate (R)</button>
   <button class="tool-btn" id="btn-scale">Scale (S)</button>
+  <div class="tool-sep"></div>
+  <button class="tool-btn export-btn" id="btn-export">⬇ Export</button>
+</div>
+
+<!-- Export menu -->
+<div id="export-menu">
+  <div class="menu-title">Export</div>
+
+  <div class="export-scope">
+    <button class="scope-btn active" id="scope-scene">Whole Scene</button>
+    <button class="scope-btn" id="scope-selected">Selected Only</button>
+  </div>
+
+  <div class="menu-title" style="margin-top:6px">Format</div>
+  <div class="menu-item" data-fmt="glb">  <span class="ic">◈</span> GLB <span class="fmt-desc">(binary, universal)</span></div>
+  <div class="menu-item" data-fmt="gltf"> <span class="ic">◈</span> GLTF <span class="fmt-desc">(JSON, readable)</span></div>
+  <div class="menu-item" data-fmt="obj">  <span class="ic">◈</span> OBJ <span class="fmt-desc">(legacy, wide support)</span></div>
+  <div class="menu-item" data-fmt="stl">  <span class="ic">◈</span> STL <span class="fmt-desc">(3D printing)</span></div>
 </div>
 
 <div id="statusbar">
