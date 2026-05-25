@@ -103,7 +103,6 @@ renderer.domElement.addEventListener('pointerup', (e) => {
 
 // ── Keyboard ──
 window.addEventListener('keydown', (e) => {
-  console.log(e.key, e.shiftKey);
   if (e.ctrlKey && (e.key === 'z' || e.key === 'Z')) {
     const action = undoStack.pop();
     if (action) {
