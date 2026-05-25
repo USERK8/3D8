@@ -1,54 +1,41 @@
 import * as THREE from 'three';
 import { TransformControls } from 'three/addons/controls/TransformControls.js';
-import { ViewHelper } from 'three/addons/helpers/ViewHelper.js'; // The official clickable gizmo!
+import { ViewHelper } from 'three/addons/helpers/ViewHelper.js'; 
 
 import { createScene, createCamera, createRenderer, createLights, createGrid } from './scene.js';
 import { createControls, handleResize } from './controls.js';
 import { ObjectManager } from './objects.js';
 
-// --- INITIALIZATION ---
 const canvas = document.getElementById('viewport');
 const scene = createScene();
 const camera = createCamera();
 const renderer = createRenderer(canvas);
-renderer.autoClear = false; // Required so we can draw the gizmo OVER the scene
 
 createLights(scene);
 createGrid(scene);
 
 const orbit = createControls(camera, canvas);
 const objManager = new ObjectManager(scene);
-const clock = new THREE.Clock(); // Used for smooth camera animation
+const clock = new THREE.Clock(); 
 
-// --- UNDO STACK ---
 const undoStack = [];
 let dragStartState = null;
 
-// --- THE BLENDER GIZMO (VIEW HELPER) ---
-// Hide the old manual HTML elements we made earlier
-document.getElementById('gizmo').style.display = 'none';
-document.getElementById('view-label').style.display = 'none';
+// --- GIZMO AT TOP RIGHT FIX ---
+const gizmoCanvas = document.getElementById('gizmo');
+// Create a mini-renderer just for the gizmo so it stays top-right
+const gizmoRenderer = new THREE.WebGLRenderer({ canvas: gizmoCanvas, alpha: true, antialias: true });
+gizmoRenderer.setSize(128, 128);
 
-const viewHelper = new ViewHelper(camera, renderer.domElement);
+const viewHelper = new ViewHelper(camera, gizmoCanvas);
 
-// Create an invisible clickable box over the top-right corner to catch clicks
-const viewBox = document.createElement('div');
-viewBox.style.position = 'absolute';
-viewBox.style.right = '0';
-viewBox.style.top = '0';
-viewBox.style.height = '128px';
-viewBox.style.width = '128px';
-viewBox.style.cursor = 'pointer';
-document.body.appendChild(viewBox);
-
-// Handle the gizmo click (smoothly animates to Top/Front/Right views)
-viewBox.addEventListener('pointerup', (e) => {
+gizmoCanvas.addEventListener('pointerup', (e) => {
   e.stopPropagation();
   viewHelper.handleClick(e);
 });
-viewBox.addEventListener('pointerdown', (e) => e.stopPropagation());
+gizmoCanvas.addEventListener('pointerdown', (e) => e.stopPropagation());
 
-// --- TRANSFORM CONTROLS (Move/Rotate/Scale arrows) ---
+// --- TRANSFORM CONTROLS ---
 const transformControl = new TransformControls(camera, renderer.domElement);
 scene.add(transformControl);
 
@@ -93,7 +80,7 @@ document.getElementById('btn-move').onclick = () => setTool('translate');
 document.getElementById('btn-rotate').onclick = () => setTool('rotate');
 document.getElementById('btn-scale').onclick = () => setTool('scale');
 
-// --- RAYCASTING (Object Selection) ---
+// --- RAYCASTING ---
 const raycaster = new THREE.Raycaster();
 const mouse = new THREE.Vector2();
 let isOrbiting = false;
@@ -220,15 +207,16 @@ function animate() {
 
   orbit.update(); 
   
-  // FIXED: This allows the gizmo camera to swoop around smoothly when clicked!
   if (viewHelper.animating === true) {
     viewHelper.update(clock.getDelta());
   }
 
-  // Draw the main scene, then draw the interactive gizmo over it
-  renderer.clear();
+  // Render main scene normally
   renderer.render(scene, camera);
-  viewHelper.render(renderer);
+  
+  // Render Gizmo separately in its own top-right canvas
+  gizmoRenderer.clear();
+  viewHelper.render(gizmoRenderer);
 }
 
 // Start the app
