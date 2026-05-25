@@ -21,33 +21,73 @@ const objManager = new ObjectManager(scene);
 const undoStack = [];
 let dragStartState = null;
 
-// --- TRANSFORM CONTROLS (The Gizmo) ---
+// --- GIZMO SETUP ---
+const gizmoCanvas = document.getElementById('gizmo');
+const viewLabelEl = document.getElementById('view-label');
+
+const gizmoRenderer = new THREE.WebGLRenderer({ canvas: gizmoCanvas, alpha: true, antialias: true });
+gizmoRenderer.setSize(90, 90);
+const gizmoScene = new THREE.Scene();
+
+// Orthographic camera for the gizmo so the axes don't warp
+const gizmoCamera = new THREE.OrthographicCamera(-1.2, 1.2, 1.2, -1.2, 0.1, 10);
+gizmoCamera.position.set(0, 0, 5);
+gizmoCamera.up.set(0, 0, 1); 
+
+// Create Blender-style Axis Lines
+function createGizmoAxis(color, euler) {
+  const group = new THREE.Group();
+  const lineMat = new THREE.LineBasicMaterial({ color: color, linewidth: 3 });
+  const lineGeo = new THREE.BufferGeometry().setFromPoints([
+    new THREE.Vector3(0, 0, 0),
+    new THREE.Vector3(0, 1, 0)
+  ]);
+  group.add(new THREE.Line(lineGeo, lineMat));
+  
+  const sphereMat = new THREE.MeshBasicMaterial({ color: color });
+  const sphereGeo = new THREE.SphereGeometry(0.18, 16, 16);
+  const sphere = new THREE.Mesh(sphereGeo, sphereMat);
+  sphere.position.set(0, 1, 0);
+  group.add(sphere);
+  
+  group.rotation.copy(euler);
+  return group;
+}
+
+// X = Red, Y = Blue, Z = Green
+gizmoScene.add(createGizmoAxis(0xff3333, new THREE.Euler(0, 0, -Math.PI/2))); 
+gizmoScene.add(createGizmoAxis(0x4488ff, new THREE.Euler(0, 0, 0))); 
+gizmoScene.add(createGizmoAxis(0x33aa44, new THREE.Euler(Math.PI/2, 0, 0))); 
+
+function updateViewLabel() {
+  const v = new THREE.Vector3(camera.position.x, camera.position.y, camera.position.z).normalize();
+  const rx = Math.round(v.x);
+  const ry = Math.round(v.y);
+  const rz = Math.round(v.z);
+
+  if (rx === 0 && ry === 0 && rz === 1) viewLabelEl.textContent = 'TOP';
+  else if (rx === 0 && ry === 0 && rz === -1) viewLabelEl.textContent = 'BOTTOM';
+  else if (rx === 0 && ry === -1 && rz === 0) viewLabelEl.textContent = 'FRONT';
+  else if (rx === 0 && ry === 1 && rz === 0) viewLabelEl.textContent = 'BACK';
+  else if (rx === 1 && ry === 0 && rz === 0) viewLabelEl.textContent = 'RIGHT';
+  else if (rx === -1 && ry === 0 && rz === 0) viewLabelEl.textContent = 'LEFT';
+  else viewLabelEl.textContent = 'PERSP';
+}
+
+// --- TRANSFORM CONTROLS ---
 const transformControl = new TransformControls(camera, renderer.domElement);
 scene.add(transformControl);
 
 transformControl.addEventListener('dragging-changed', (event) => {
   orbit.enabled = !event.value;
-  
   const mesh = transformControl.object;
   if (!mesh) return;
 
   if (event.value) {
-    // Drag started: Save the initial state before modifying
-    dragStartState = {
-      pos: mesh.position.clone(),
-      rot: mesh.rotation.clone(),
-      scale: mesh.scale.clone()
-    };
-  } else {
-    // Drag ended: Push the transform action to the undo stack
-    if (dragStartState) {
-      undoStack.push({
-        type: 'transform',
-        mesh: mesh,
-        oldState: dragStartState
-      });
-      dragStartState = null;
-    }
+    dragStartState = { pos: mesh.position.clone(), rot: mesh.rotation.clone(), scale: mesh.scale.clone() };
+  } else if (dragStartState) {
+    undoStack.push({ type: 'transform', mesh: mesh, oldState: dragStartState });
+    dragStartState = null;
   }
 });
 
@@ -59,38 +99,33 @@ const camInfoEl = document.getElementById('cam-info');
 const addMenu = document.getElementById('add-menu');
 const toolBtns = document.querySelectorAll('.tool-btn');
 
-// FIXED: Default to 'translate' so the gizmo shows up immediately
 let currentTool = 'translate'; 
 
 function setTool(toolName) {
   currentTool = toolName;
-  
   toolBtns.forEach(btn => btn.classList.remove('active'));
   document.getElementById(toolName === 'select' ? 'btn-select' : `btn-${toolName === 'translate' ? 'move' : toolName}`).classList.add('active');
 
   const selectedObj = objManager.getSelected();
-  if (toolName === 'select') {
-    transformControl.detach();
-  } else if (selectedObj) {
+  if (toolName === 'select') transformControl.detach();
+  else if (selectedObj) {
     transformControl.attach(selectedObj);
     transformControl.setMode(toolName); 
   }
 }
 
-// Bind UI Buttons
 document.getElementById('btn-select').onclick = () => setTool('select');
 document.getElementById('btn-move').onclick = () => setTool('translate');
 document.getElementById('btn-rotate').onclick = () => setTool('rotate');
 document.getElementById('btn-scale').onclick = () => setTool('scale');
 
-// --- RAYCASTING (Object Selection) ---
+// --- RAYCASTING ---
 const raycaster = new THREE.Raycaster();
 const mouse = new THREE.Vector2();
 let isOrbiting = false;
 
 renderer.domElement.addEventListener('pointerdown', () => { isOrbiting = false; });
 renderer.domElement.addEventListener('pointermove', () => { isOrbiting = true; });
-
 renderer.domElement.addEventListener('pointerup', (event) => {
   if (isOrbiting || transformControl.dragging) return; 
 
@@ -113,7 +148,6 @@ renderer.domElement.addEventListener('pointerup', (event) => {
 
 // --- KEYBOARD SHORTCUTS ---
 window.addEventListener('keydown', (event) => {
-  // Undo (Ctrl + Z)
   if (event.ctrlKey && (event.key === 'z' || event.key === 'Z')) {
     const action = undoStack.pop();
     if (action) {
@@ -137,7 +171,6 @@ window.addEventListener('keydown', (event) => {
     return;
   }
 
-  // Add Menu (Shift + A)
   if (event.shiftKey && (event.key === 'a' || event.key === 'A')) {
     event.preventDefault();
     addMenu.classList.add('visible');
@@ -147,18 +180,16 @@ window.addEventListener('keydown', (event) => {
     return;
   }
 
-  // Tools
   if (!event.ctrlKey) {
     if (event.key === 'g' || event.key === 'G') setTool('translate');
     if (event.key === 'r' || event.key === 'R') setTool('rotate');
     if (event.key === 's' || event.key === 'S') setTool('scale');
   }
   
-  // Delete
   if (event.key === 'Delete' || event.key === 'Backspace') {
     const sel = objManager.getSelected();
     if (sel) {
-      undoStack.push({ type: 'delete', mesh: sel }); // Save to undo stack
+      undoStack.push({ type: 'delete', mesh: sel }); 
       objManager.deleteSelected();
       transformControl.detach();
       updateUI();
@@ -168,15 +199,15 @@ window.addEventListener('keydown', (event) => {
   if (event.key === 'Escape') addMenu.classList.remove('visible');
 });
 
-// --- ADD MENU LOGIC ---
+// --- ADD MENU ---
 document.querySelectorAll('.menu-item').forEach(item => {
   item.addEventListener('click', (event) => {
     const type = event.currentTarget.dataset.type;
     const newMesh = objManager.addObject(type);
     
-    undoStack.push({ type: 'add', mesh: newMesh }); // Save to undo stack
-    
+    undoStack.push({ type: 'add', mesh: newMesh }); 
     if (currentTool !== 'select') transformControl.attach(newMesh);
+    
     addMenu.classList.remove('visible');
     updateUI();
   });
@@ -188,10 +219,8 @@ window.addEventListener('click', (event) => {
   }
 });
 
-// --- WINDOW RESIZE ---
 window.addEventListener('resize', () => handleResize(camera, renderer));
 
-// --- UI UPDATER ---
 function updateUI() {
   objCountEl.textContent = `Objects: ${objManager.getObjectCount()}`;
   const sel = objManager.getSelected();
@@ -207,19 +236,4 @@ function animate() {
 
   const now = performance.now();
   frames++;
-  if (now >= lastTime + 1000) {
-    fpsEl.textContent = `${frames} fps`;
-    frames = 0;
-    lastTime = now;
-  }
-
-  camInfoEl.textContent = `CAM: [${camera.position.x.toFixed(1)}, ${camera.position.y.toFixed(1)}, ${camera.position.z.toFixed(1)}]`;
-
-  orbit.update(); 
-  renderer.render(scene, camera);
-}
-
-// Start the app
-setTool('translate'); // Ensure UI syncs up on load
-updateUI();
-animate();
+  if (now >= lastTime + 10
