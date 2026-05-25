@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>3D Modeler</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      background: #1a1a1a;
+      overflow: hidden;
+      font-family: 'Courier New', monospace;
+      color: #ccc;
+    }
+
+    /* The canvas fills the whole window */
+    #viewport {
+      width: 100vw;
+      height: 100vh;
+      display: block;
+    }
+
+    /* HUD overlay - top left info */
+    #hud {
+      position: fixed;
+      top: 12px;
+      left: 12px;
+      background: rgba(30, 30, 30, 0.85);
+      border: 1px solid #333;
+      border-radius: 4px;
+      padding: 8px 12px;
+      font-size: 11px;
+      color: #888;
+      pointer-events: none; /* clicks pass through to canvas */
+      line-height: 1.8;
+    }
+
+    #hud span {
+      color: #e8a838;
+      font-weight: bold;
+    }
+
+    /* Bottom status bar */
+    #statusbar {
+      position: fixed;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      height: 24px;
+      background: #232323;
+      border-top: 1px solid #333;
+      display: flex;
+      align-items: center;
+      padding: 0 12px;
+      font-size: 11px;
+      color: #666;
+      gap: 24px;
+    }
+
+    #statusbar .sep {
+      color: #333;
+    }
+  </style>
+</head>
+<body>
+
+  <canvas id="viewport"></canvas>
+
+  <!-- HUD: controls cheatsheet -->
+  <div id="hud">
+    <span>CONTROLS</span><br>
+    Left drag &nbsp;→ Orbit<br>
+    Right drag → Pan<br>
+    Scroll &nbsp;&nbsp;&nbsp;&nbsp;→ Zoom<br>
+  </div>
+
+  <!-- Status bar at the bottom -->
+  <div id="statusbar">
+    <span>3D Modeler</span>
+    <span class="sep">|</span>
+    <span>Stage 1 — Viewport</span>
+    <span class="sep">|</span>
+    <span id="fps">-- fps</span>
+  </div>
+
+  <!--
+    Three.js from CDN.
+    importmap lets us write: import * as THREE from 'three'
+    instead of a full URL everywhere.
+  -->
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+        "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+      }
+    }
+  </script>
+
+  <script type="module">
+    import * as THREE from 'three';
+    import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+    // ─────────────────────────────────────────────
+    // 1. RENDERER
+    // The renderer draws 3D scenes onto the canvas.
+    // ─────────────────────────────────────────────
+    const canvas = document.getElementById('viewport');
+    const renderer = new THREE.WebGLRenderer({
+      canvas,
+      antialias: true  // smooth edges
+    });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.setPixelRatio(window.devicePixelRatio); // sharp on retina screens
+    renderer.shadowMap.enabled = true;               // allow shadows later
+
+    // ─────────────────────────────────────────────
+    // 2. SCENE
+    // The scene is a container that holds all 3D objects.
+    // ─────────────────────────────────────────────
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x1a1a1a); // dark Blender-style bg
+
+    // ─────────────────────────────────────────────
+    // 3. CAMERA
+    // PerspectiveCamera mimics how human eyes see.
+    // args: fov, aspect ratio, near clip, far clip
+    // ─────────────────────────────────────────────
+    const camera = new THREE.PerspectiveCamera(
+      60,                                          // 60° field of view
+      window.innerWidth / window.innerHeight,      // aspect ratio
+      0.01,                                        // near clip (min render distance)
+      1000                                         // far clip (max render distance)
+    );
+    camera.position.set(5, 4, 7); // start position: slightly above and to the side
+    camera.lookAt(0, 0, 0);       // look at the center of the scene
+
+    // ─────────────────────────────────────────────
+    // 4. ORBIT CONTROLS
+    // Lets the user rotate/pan/zoom with the mouse.
+    // ─────────────────────────────────────────────
+    const controls = new OrbitControls(camera, canvas);
+    controls.enableDamping = true;    // smooth inertia feel
+    controls.dampingFactor = 0.08;
+    controls.mouseButtons = {
+      LEFT: THREE.MOUSE.ROTATE,
+      MIDDLE: THREE.MOUSE.DOLLY,
+      RIGHT: THREE.MOUSE.PAN
+    };
+
+    // ─────────────────────────────────────────────
+    // 5. GRID
+    // InfiniteGridHelper gives a Blender-like floor grid.
+    // We build a simple one with GridHelper.
+    // ─────────────────────────────────────────────
+
+    // Main grid (1-unit cells)
+    const grid = new THREE.GridHelper(
+      30,        // total size
+      30,        // number of divisions
+      0x444444,  // center line color
+      0x2a2a2a   // grid line color
+    );
+    scene.add(grid);
+
+    // Thinner subdivisions grid (0.1-unit cells) for precision
+    const gridSub = new THREE.GridHelper(30, 300, 0x222222, 0x222222);
+    scene.add(gridSub);
+
+    // ─────────────────────────────────────────────
+    // 6. WORLD AXES (X=red, Y=green, Z=blue)
+    // Blender-style axis indicator at the origin.
+    // ─────────────────────────────────────────────
+    const axes = new THREE.AxesHelper(1.5);
+    scene.add(axes);
+
+    // ─────────────────────────────────────────────
+    // 7. LIGHTS
+    // ─────────────────────────────────────────────
+
+    // Ambient light: soft overall illumination
+    const ambient = new THREE.AmbientLight(0xffffff, 0.4);
+    scene.add(ambient);
+
+    // Directional light: like the sun, casts shadows
+    const dirLight = new THREE.DirectionalLight(0xffffff, 1.0);
+    dirLight.position.set(5, 10, 5);
+    dirLight.castShadow = true;
+    scene.add(dirLight);
+
+    // ─────────────────────────────────────────────
+    // 8. PLACEHOLDER CUBE
+    // Just to confirm the viewport is working.
+    // We'll replace this in Stage 2 with a real toolbar.
+    // ─────────────────────────────────────────────
+    const cubeGeo = new THREE.BoxGeometry(1, 1, 1);
+    const cubeMat = new THREE.MeshStandardMaterial({
+      color: 0xe8a838,   // orange, Blender's default cube color
+      roughness: 0.6,
+      metalness: 0.1
+    });
+    const cube = new THREE.Mesh(cubeGeo, cubeMat);
+    cube.castShadow = true;
+    cube.receiveShadow = true;
+    cube.position.y = 0.5; // sit on the grid
+    scene.add(cube);
+
+    // ─────────────────────────────────────────────
+    // 9. RENDER LOOP
+    // requestAnimationFrame calls this ~60 times/sec.
+    // ─────────────────────────────────────────────
+    const fpsEl = document.getElementById('fps');
+    let lastTime = performance.now();
+    let frames = 0;
+
+    function animate() {
+      requestAnimationFrame(animate);
+
+      controls.update(); // required when damping is enabled
+
+      renderer.render(scene, camera);
+
+      // FPS counter
+      frames++;
+      const now = performance.now();
+      if (now - lastTime >= 1000) {
+        fpsEl.textContent = frames + ' fps';
+        frames = 0;
+        lastTime = now;
+      }
+    }
+
+    animate();
+
+    // ─────────────────────────────────────────────
+    // 10. RESIZE HANDLER
+    // Keep canvas filling the window on resize.
+    // ─────────────────────────────────────────────
+    window.addEventListener('resize', () => {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+
+  </script>
+</body>
+</html>
