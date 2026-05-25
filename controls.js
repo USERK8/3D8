@@ -3,30 +3,25 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 export function createControls(camera, canvas) {
   const controls = new OrbitControls(camera, canvas);
 
-  
   // Smooth, responsive controls
   controls.enableDamping = true;
-  controls.dampingFactor = 0.06;
-  controls.screenSpacePanning = true;
-  controls.zoomToCursor = true;
+  controls.dampingFactor = 0.05; // Blender-like smoothness
+  controls.screenSpacePanning = true; 
   
-  // Distance limits
-  controls.minDistance = 0.3;
-  controls.maxDistance = 800;
+  // FIXED: Stop the infinite zoom glitch!
+  controls.enableZoom = true;
+  controls.zoomSpeed = 1.0;
   
-  // Mouse button mapping
+  // This stops the camera from clipping through the 0,0,0 origin and flipping out
+  controls.minDistance = 1.0; 
+  // This stops you from zooming out into the infinite void
+  controls.maxDistance = 500; 
+  
   controls.mouseButtons = {
     LEFT: 0,    // ROTATE
     MIDDLE: 1,  // DOLLY (zoom)
     RIGHT: 2    // PAN
   };
-  
-  // FIXED: Smooth zoom with smaller steps
-  // This prevents the "one giant jump" issue
-  controls.zoomSpeed = 0.5; // Slower, more controlled zoom
-  
-  // Prevent zoom from being too sensitive
-  controls.enableZoom = true;
   
   return controls;
 }
