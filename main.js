@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { TransformControls } from 'three/addons/controls/TransformControls.js';
-import { ViewHelper } from 'three/addons/helpers/ViewHelper.js'; 
+import { ViewHelper } from 'three/addons/helpers/ViewHelper.js';
 
 import { createScene, createCamera, createRenderer, createLights, createGrid } from './scene.js';
 import { createControls, handleResize } from './controls.js';
@@ -17,25 +17,20 @@ createGrid(scene);
 
 const orbit = createControls(camera, canvas);
 const objManager = new ObjectManager(scene);
-const clock = new THREE.Clock(); 
+const clock = new THREE.Clock();
 
 const undoStack = [];
 let dragStartState = null;
 
-// --- GIZMO SETUP ---
+// ── Gizmo ──
 const gizmoCanvas = document.getElementById('gizmo');
 const gizmoRenderer = new THREE.WebGLRenderer({ canvas: gizmoCanvas, alpha: true, antialias: true });
 gizmoRenderer.setSize(120, 120);
-
 const viewHelper = new ViewHelper(camera, gizmoCanvas);
+gizmoCanvas.addEventListener('pointerup',   e => { e.stopPropagation(); viewHelper.handleClick(e); });
+gizmoCanvas.addEventListener('pointerdown', e => e.stopPropagation());
 
-gizmoCanvas.addEventListener('pointerup', (e) => {
-  e.stopPropagation();
-  viewHelper.handleClick(e);
-});
-gizmoCanvas.addEventListener('pointerdown', (e) => e.stopPropagation());
-
-// --- TRANSFORM CONTROLS ---
+// ── Transform controls ──
 const transformControl = new TransformControls(camera, renderer.domElement);
 scene.add(transformControl);
 
@@ -43,64 +38,61 @@ transformControl.addEventListener('dragging-changed', (event) => {
   orbit.enabled = !event.value;
   const mesh = transformControl.object;
   if (!mesh) return;
-
   if (event.value) {
     dragStartState = { pos: mesh.position.clone(), rot: mesh.rotation.clone(), scale: mesh.scale.clone() };
   } else if (dragStartState) {
-    undoStack.push({ type: 'transform', mesh: mesh, oldState: dragStartState });
+    undoStack.push({ type: 'transform', mesh, oldState: dragStartState });
     dragStartState = null;
   }
 });
 
-// --- UI ELEMENTS ---
+// ── UI elements ──
 const objCountEl = document.getElementById('obj-count');
-const selInfoEl = document.getElementById('sel-info');
-const fpsEl = document.getElementById('fps');
-const camInfoEl = document.getElementById('cam-info');
-const addMenu = document.getElementById('add-menu');
-const toolBtns = document.querySelectorAll('.tool-btn');
-const hListEl = document.getElementById('h-list');
+const selInfoEl  = document.getElementById('sel-info');
+const fpsEl      = document.getElementById('fps');
+const camInfoEl  = document.getElementById('cam-info');
+const addMenu    = document.getElementById('add-menu');
+const toolBtns   = document.querySelectorAll('.tool-btn');
+const hListEl    = document.getElementById('h-list');
 
-let currentTool = 'translate'; 
+let currentTool = 'translate';
 
 function setTool(toolName) {
   currentTool = toolName;
   toolBtns.forEach(btn => btn.classList.remove('active'));
-  document.getElementById(toolName === 'select' ? 'btn-select' : `btn-${toolName === 'translate' ? 'move' : toolName}`).classList.add('active');
+  const idMap = { select: 'btn-select', translate: 'btn-move', rotate: 'btn-rotate', scale: 'btn-scale' };
+  document.getElementById(idMap[toolName] || 'btn-select').classList.add('active');
 
-  const selectedObj = objManager.getSelected();
+  const sel = objManager.getSelected();
   if (toolName === 'select') transformControl.detach();
-  else if (selectedObj) {
-    transformControl.attach(selectedObj);
-    transformControl.setMode(toolName); 
-  }
+  else if (sel) { transformControl.attach(sel); transformControl.setMode(toolName); }
 }
 
 document.getElementById('btn-select').onclick = () => setTool('select');
-document.getElementById('btn-move').onclick = () => setTool('translate');
+document.getElementById('btn-move').onclick   = () => setTool('translate');
 document.getElementById('btn-rotate').onclick = () => setTool('rotate');
-document.getElementById('btn-scale').onclick = () => setTool('scale');
+document.getElementById('btn-scale').onclick  = () => setTool('scale');
 
-// --- RAYCASTING ---
+// ── Raycasting (viewport click to select) ──
 const raycaster = new THREE.Raycaster();
 const mouse = new THREE.Vector2();
-let isOrbiting = false;
+let isPointerMoved = false;
 
-renderer.domElement.addEventListener('pointerdown', () => { isOrbiting = false; });
-renderer.domElement.addEventListener('pointermove', () => { isOrbiting = true; });
-renderer.domElement.addEventListener('pointerup', (event) => {
-  if (isOrbiting || transformControl.dragging) return; 
+renderer.domElement.addEventListener('pointerdown', () => { isPointerMoved = false; });
+renderer.domElement.addEventListener('pointermove', () => { isPointerMoved = true;  });
+renderer.domElement.addEventListener('pointerup', (e) => {
+  if (e.button !== 0) return; // left click only
+  if (isPointerMoved || transformControl.dragging) return;
 
-  mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
-  mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
-
+  mouse.x =  (e.clientX / window.innerWidth)  * 2 - 1;
+  mouse.y = -(e.clientY / window.innerHeight) * 2 + 1;
   raycaster.setFromCamera(mouse, camera);
-  const intersects = raycaster.intersectObjects(objManager.getObjects());
+  const hits = raycaster.intersectObjects(objManager.getObjects());
 
-  if (intersects.length > 0) {
-    const clickedObj = intersects[0].object;
-    objManager.selectObject(clickedObj);
-    if (currentTool !== 'select') transformControl.attach(clickedObj);
+  if (hits.length > 0) {
+    const obj = hits[0].object;
+    objManager.selectObject(obj);
+    if (currentTool !== 'select') { transformControl.attach(obj); transformControl.setMode(currentTool); }
   } else {
     objManager.selectObject(null);
     transformControl.detach();
@@ -108,18 +100,14 @@ renderer.domElement.addEventListener('pointerup', (event) => {
   updateUI();
 });
 
-// --- KEYBOARD SHORTCUTS ---
-window.addEventListener('keydown', (event) => {
-  if (event.ctrlKey && (event.key === 'z' || event.key === 'Z')) {
+// ── Keyboard ──
+window.addEventListener('keydown', (e) => {
+  if (e.ctrlKey && (e.key === 'z' || e.key === 'Z')) {
     const action = undoStack.pop();
     if (action) {
       if (action.type === 'add') {
-        scene.remove(action.mesh);
-        objManager.objects = objManager.objects.filter(o => o !== action.mesh);
-        if (objManager.getSelected() === action.mesh) {
-          objManager.selectObject(null);
-          transformControl.detach();
-        }
+        objManager.deleteObject(action.mesh);
+        transformControl.detach();
       } else if (action.type === 'delete') {
         scene.add(action.mesh);
         objManager.objects.push(action.mesh);
@@ -133,93 +121,247 @@ window.addEventListener('keydown', (event) => {
     return;
   }
 
-  if (event.shiftKey && (event.key === 'a' || event.key === 'A')) {
-    event.preventDefault();
-    addMenu.classList.add('visible');
+  if (e.shiftKey && (e.key === 'a' || e.key === 'A')) {
+    e.preventDefault();
     addMenu.style.left = '50%';
-    addMenu.style.top = '50%';
+    addMenu.style.top  = '50%';
     addMenu.style.transform = 'translate(-50%, -50%)';
+    addMenu.classList.add('visible');
     return;
   }
 
-  if (!event.ctrlKey) {
-    if (event.key === 'w' || event.key === 'G') setTool('translate');
-    if (event.key === 'r' || event.key === 'R') setTool('rotate');
-    if (event.key === 's' || event.key === 'S') setTool('scale');
+  if (!e.ctrlKey) {
+    if (e.key === 'w' || e.key === 'G') setTool('translate');
+    if (e.key === 'r' || e.key === 'R') setTool('rotate');
+    if (e.key === 's' || e.key === 'S') setTool('scale');
   }
-  
-  if (event.key === 'Delete' || event.key === 'Backspace') {
+
+  if (e.key === 'Delete' || e.key === 'Backspace') {
     const sel = objManager.getSelected();
     if (sel) {
-      undoStack.push({ type: 'delete', mesh: sel }); 
+      undoStack.push({ type: 'delete', mesh: sel });
       objManager.deleteSelected();
       transformControl.detach();
       updateUI();
     }
   }
 
-  if (event.key === 'Escape') addMenu.classList.remove('visible');
+  if (e.key === 'Escape') {
+    addMenu.classList.remove('visible');
+    hideContextMenu();
+  }
 });
 
-// --- ADD MENU ---
+// ── Add menu ──
 document.querySelectorAll('.menu-item').forEach(item => {
-  item.addEventListener('click', (event) => {
-    const type = event.currentTarget.dataset.type;
-    const newMesh = objManager.addObject(type);
-    
-    undoStack.push({ type: 'add', mesh: newMesh }); 
-    if (currentTool !== 'select') transformControl.attach(newMesh);
-    
+  item.addEventListener('click', (e) => {
+    const newMesh = objManager.addObject(e.currentTarget.dataset.type);
+    undoStack.push({ type: 'add', mesh: newMesh });
+    if (currentTool !== 'select') { transformControl.attach(newMesh); transformControl.setMode(currentTool); }
     addMenu.classList.remove('visible');
     updateUI();
   });
 });
 
-window.addEventListener('click', (event) => {
-  if (addMenu.classList.contains('visible') && !event.target.closest('#add-menu') && !event.shiftKey) {
+window.addEventListener('click', (e) => {
+  if (addMenu.classList.contains('visible') && !e.target.closest('#add-menu') && !e.shiftKey) {
     addMenu.classList.remove('visible');
   }
 });
 
-window.addEventListener('resize', () => handleResize(camera, renderer));
+// ════════════════════════════════════════════════
+// RIGHT-CLICK CONTEXT MENU
+// ════════════════════════════════════════════════
+const ctxMenu    = document.getElementById('context-menu');
+const ctxTitle   = document.getElementById('ctx-title');
+let ctxTarget    = null; // the object the menu was opened for
 
-// --- UI UPDATER (NOW INCLUDES HIERARCHY!) ---
+function showContextMenu(x, y, obj) {
+  ctxTarget = obj;
+  ctxTitle.textContent = obj.userData.name;
+
+  // Keep menu inside viewport
+  const menuW = 180, menuH = 130;
+  ctxMenu.style.left = Math.min(x, window.innerWidth  - menuW) + 'px';
+  ctxMenu.style.top  = Math.min(y, window.innerHeight - menuH) + 'px';
+  ctxMenu.classList.add('visible');
+}
+
+function hideContextMenu() {
+  ctxMenu.classList.remove('visible');
+  ctxTarget = null;
+}
+
+// Rename
+document.getElementById('ctx-rename').addEventListener('click', () => {
+  if (!ctxTarget) return;
+  hideContextMenu();
+  startInlineRename(ctxTarget);
+});
+
+// Duplicate
+document.getElementById('ctx-duplicate').addEventListener('click', () => {
+  if (!ctxTarget) return;
+  const dupe = objManager.duplicateObject(ctxTarget);
+  undoStack.push({ type: 'add', mesh: dupe });
+  if (currentTool !== 'select') { transformControl.attach(dupe); transformControl.setMode(currentTool); }
+  hideContextMenu();
+  updateUI();
+});
+
+// Delete
+document.getElementById('ctx-delete').addEventListener('click', () => {
+  if (!ctxTarget) return;
+  undoStack.push({ type: 'delete', mesh: ctxTarget });
+  const wasSelected = objManager.getSelected() === ctxTarget;
+  objManager.deleteObject(ctxTarget);
+  if (wasSelected) transformControl.detach();
+  hideContextMenu();
+  updateUI();
+});
+
+// Close context menu on outside click
+window.addEventListener('mousedown', (e) => {
+  if (!ctxMenu.contains(e.target)) hideContextMenu();
+});
+
+// Prevent browser's native context menu on canvas
+canvas.addEventListener('contextmenu', e => e.preventDefault());
+
+// ════════════════════════════════════════════════
+// INLINE RENAME (double-click or via context menu)
+// ════════════════════════════════════════════════
+function showRenameError(msg, x, y) {
+  // Remove any existing error
+  document.querySelectorAll('.rename-error').forEach(el => el.remove());
+  const el = document.createElement('div');
+  el.className = 'rename-error';
+  el.textContent = msg;
+  el.style.left = x + 'px';
+  el.style.top  = (y - 30) + 'px';
+  document.body.appendChild(el);
+  setTimeout(() => el.remove(), 2000);
+}
+
+function startInlineRename(obj) {
+  // Find the h-item div for this object and replace its text with an input
+  const items = hListEl.querySelectorAll('.h-item');
+  let targetDiv = null;
+  items.forEach(div => {
+    if (div.dataset.objName === obj.userData.name) targetDiv = div;
+  });
+  if (!targetDiv) return;
+
+  const rect = targetDiv.getBoundingClientRect();
+  const input = document.createElement('input');
+  input.className = 'rename-input';
+  input.value = obj.userData.name;
+  input.type  = 'text';
+  input.maxLength = 48;
+
+  // Replace div content with input (keep icon)
+  const icon = targetDiv.querySelector('.ic').outerHTML;
+  targetDiv.innerHTML = icon + ' ';
+  targetDiv.appendChild(input);
+  input.focus();
+  input.select();
+
+  function commit() {
+    const err = objManager.renameObject(obj, input.value);
+    if (err) {
+      showRenameError(err, rect.left, rect.top);
+      input.focus();
+      input.select();
+      return;
+    }
+    updateUI();
+  }
+
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter')  { e.preventDefault(); commit(); }
+    if (e.key === 'Escape') { updateUI(); } // cancel — just rebuild
+    e.stopPropagation(); // don't fire G/R/S shortcuts while typing
+  });
+
+  input.addEventListener('blur', () => {
+    // If value unchanged or blank, just cancel
+    if (input.value.trim() === obj.userData.name || !input.value.trim()) {
+      updateUI();
+    } else {
+      commit();
+    }
+  });
+}
+
+// ════════════════════════════════════════════════
+// HIERARCHY UI
+// ════════════════════════════════════════════════
 function updateUI() {
   objCountEl.textContent = `Objects: ${objManager.getObjectCount()}`;
   const sel = objManager.getSelected();
-  selInfoEl.textContent = sel ? `Selected: ${sel.userData.name}` : 'Nothing selected';
+  selInfoEl.textContent  = sel ? `Selected: ${sel.userData.name}` : 'Nothing selected';
 
-  // Rebuild the hierarchy list
   hListEl.innerHTML = '';
   objManager.getObjects().forEach(obj => {
     const div = document.createElement('div');
     div.className = 'h-item';
+    div.dataset.objName = obj.userData.name; // used by rename to find the row
     if (sel === obj) div.classList.add('active');
-    
-    // Assign a matching icon
-    let icon = '■';
-    if (obj.userData.name.includes('sphere')) icon = '●';
-    else if (obj.userData.name.includes('cylinder')) icon = '⬡';
-    else if (obj.userData.name.includes('cone')) icon = '▲';
-    else if (obj.userData.name.includes('torus')) icon = '◎';
-    else if (obj.userData.name.includes('plane')) icon = '▬';
+
+    const iconMap = { sphere:'●', cylinder:'⬡', cone:'▲', torus:'◎', plane:'▬' };
+    const baseName = obj.userData.name.replace(/\s*\(\d+\)$/, '');
+    const icon = iconMap[baseName] || '■';
 
     div.innerHTML = `<span class="ic">${icon}</span> ${obj.userData.name}`;
-    
-    // Make the hierarchy clickable!
-    div.onclick = () => {
+
+    // Left-click: select
+    div.addEventListener('click', (e) => {
       objManager.selectObject(obj);
-      if (currentTool !== 'select') transformControl.attach(obj);
+      if (currentTool !== 'select') { transformControl.attach(obj); transformControl.setMode(currentTool); }
       updateUI();
-    };
-    
+    });
+
+    // Right-click on hierarchy item: context menu
+    div.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      objManager.selectObject(obj);
+      if (currentTool !== 'select') { transformControl.attach(obj); transformControl.setMode(currentTool); }
+      updateUI();
+      showContextMenu(e.clientX, e.clientY, obj);
+    });
+
+    // Double-click: inline rename
+    div.addEventListener('dblclick', (e) => {
+      e.stopPropagation();
+      startInlineRename(obj);
+    });
+
     hListEl.appendChild(div);
   });
 }
 
-// --- ANIMATION LOOP ---
-let lastTime = performance.now();
-let frames = 0;
+// Right-click on viewport objects also opens context menu
+renderer.domElement.addEventListener('contextmenu', (e) => {
+  e.preventDefault();
+  mouse.x =  (e.clientX / window.innerWidth)  * 2 - 1;
+  mouse.y = -(e.clientY / window.innerHeight) * 2 + 1;
+  raycaster.setFromCamera(mouse, camera);
+  const hits = raycaster.intersectObjects(objManager.getObjects());
+  if (hits.length > 0) {
+    const obj = hits[0].object;
+    objManager.selectObject(obj);
+    if (currentTool !== 'select') { transformControl.attach(obj); transformControl.setMode(currentTool); }
+    updateUI();
+    showContextMenu(e.clientX, e.clientY, obj);
+  }
+});
+
+// ── Resize ──
+window.addEventListener('resize', () => handleResize(camera, renderer));
+
+// ── Render loop ──
+let lastTime = performance.now(), frames = 0;
 
 function animate() {
   requestAnimationFrame(animate);
@@ -234,18 +376,14 @@ function animate() {
 
   camInfoEl.textContent = `CAM: [${camera.position.x.toFixed(1)}, ${camera.position.y.toFixed(1)}, ${camera.position.z.toFixed(1)}]`;
 
-  orbit.update(); 
-  
-  if (viewHelper.animating === true) {
-    viewHelper.update(clock.getDelta());
-  }
+  orbit.update();
+  if (viewHelper.animating) viewHelper.update(clock.getDelta());
 
   renderer.render(scene, camera);
   gizmoRenderer.clear();
   viewHelper.render(gizmoRenderer);
 }
 
-// Start the app
-setTool('translate'); 
+setTool('translate');
 updateUI();
 animate();
