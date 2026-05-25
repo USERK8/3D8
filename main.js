@@ -5,6 +5,7 @@ import { ViewHelper } from 'three/addons/helpers/ViewHelper.js';
 import { createScene, createCamera, createRenderer, createLights, createGrid } from './scene.js';
 import { createControls, handleResize } from './controls.js';
 import { ObjectManager } from './objects.js';
+import { exportModel } from './export.js';
 
 const canvas = document.getElementById('viewport');
 const scene = createScene();
@@ -170,8 +171,69 @@ window.addEventListener('click', (e) => {
 });
 
 // ════════════════════════════════════════════════
-// RIGHT-CLICK CONTEXT MENU
+// EXPORT MENU
 // ════════════════════════════════════════════════
+const exportMenu   = document.getElementById('export-menu');
+const btnExport    = document.getElementById('btn-export');
+let   exportScope  = 'scene'; // 'scene' | 'selected'
+
+function showExportMenu() {
+  const rect = btnExport.getBoundingClientRect();
+  // Position to the right of the toolbar button
+  exportMenu.style.left = (rect.right + 8) + 'px';
+  exportMenu.style.top  = rect.top + 'px';
+  exportMenu.classList.add('visible');
+}
+function hideExportMenu() { exportMenu.classList.remove('visible'); }
+
+btnExport.addEventListener('click', (e) => {
+  e.stopPropagation();
+  exportMenu.classList.contains('visible') ? hideExportMenu() : showExportMenu();
+});
+
+// Scope toggle buttons
+document.getElementById('scope-scene').addEventListener('click', () => {
+  exportScope = 'scene';
+  document.getElementById('scope-scene').classList.add('active');
+  document.getElementById('scope-selected').classList.remove('active');
+});
+document.getElementById('scope-selected').addEventListener('click', () => {
+  exportScope = 'selected';
+  document.getElementById('scope-selected').classList.add('active');
+  document.getElementById('scope-scene').classList.remove('active');
+});
+
+// Format buttons — only inside export-menu
+exportMenu.querySelectorAll('.menu-item[data-fmt]').forEach(item => {
+  item.addEventListener('click', () => {
+    const fmt = item.dataset.fmt;
+
+    if (exportScope === 'selected') {
+      const sel = objManager.getSelected();
+      if (!sel) {
+        // Show error toast and stay open
+        document.querySelectorAll('.export-toast').forEach(e => e.remove());
+        const el = document.createElement('div');
+        el.className = 'export-toast';
+        el.style.borderColor = 'rgba(255,50,50,0.4)';
+        el.style.color = '#f88';
+        el.textContent = '✗ No object selected';
+        document.body.appendChild(el);
+        setTimeout(() => el.remove(), 2500);
+        return;
+      }
+      exportModel(sel, fmt, sel.userData.name);
+    } else {
+      exportModel(objManager._exportGroup(THREE), fmt, 'scene');
+    }
+    hideExportMenu();
+  });
+});
+
+// Close on outside click
+window.addEventListener('mousedown', (e) => {
+  if (!exportMenu.contains(e.target) && e.target !== btnExport) hideExportMenu();
+});
 const ctxMenu    = document.getElementById('context-menu');
 const ctxTitle   = document.getElementById('ctx-title');
 let ctxTarget    = null; // the object the menu was opened for
