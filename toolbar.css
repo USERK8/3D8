@@ -1,37 +1,19 @@
-/* toolbar left-center */
 #toolbar {
-  position: fixed; 
-  top: 50%; 
-  left: 12px; 
-  transform: translateY(-50%); /* Centers it vertically */
-  display: flex; 
-  flex-direction: column; /* Stacks buttons vertically */
-  gap: 6px;
-  background: rgba(28,28,28,0.92); 
-  border: 1px solid #333;
-  border-radius: 5px; 
-  padding: 8px 5px;
+  position: fixed; top: 50%; left: 12px; transform: translateY(-50%);
+  display: flex; flex-direction: column; gap: 6px;
+  background: rgba(20, 20, 30, 0.4);
+  backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px; padding: 8px 5px; box-shadow: 0 10px 30px rgba(0,0,0,0.3);
 }
 
 .tool-btn {
-  background: #2a2a2a; 
-  border: 1px solid #3a3a3a; 
-  color: #aaa;
-  border-radius: 4px; 
-  padding: 8px 12px; 
-  font-size: 11px;
-  font-family: 'Courier New', monospace; 
-  cursor: pointer;
-  transition: all 0.1s;
+  background: rgba(0, 0, 0, 0.3); 
+  border: 1px solid rgba(255, 255, 255, 0.05); 
+  color: #aaa; border-radius: 5px; padding: 8px 12px; 
+  font-size: 11px; font-family: 'Courier New', monospace; 
+  cursor: pointer; transition: all 0.15s;
 }
 
-.tool-btn:hover { 
-  background: #353535; 
-  color: #fff; 
-}
-
-.tool-btn.active { 
-  background: #ff0033; /* Dark Neon Red */
-  color: #fff; 
-  border-color: #ff0033; 
-}
+.tool-btn:hover { background: rgba(255, 255, 255, 0.1); color: #fff; }
+.tool-btn.active { background: #ff0033; color: #fff; border-color: #ff0033; }
