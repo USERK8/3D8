@@ -6,7 +6,7 @@ import { createScene, createCamera, createRenderer, createLights, createGrid } f
 import { createControls, handleResize } from './controls.js';
 import { ObjectManager } from './objects.js';
 import { exportModel } from './export.js';
-import { setupImporter } from './import.js';
+import { setupImporter } from './import.js'; // <-- Added Importer
 
 const canvas = document.getElementById('viewport');
 const scene = createScene();
@@ -133,12 +133,12 @@ window.addEventListener('keydown', (e) => {
   }
 
   if (!e.ctrlKey) {
-    if (e.key === 'w' || e.key === 'G') setTool('translate');
+    if (e.key === 'w' || e.key === 'W') setTool('translate');
     if (e.key === 'r' || e.key === 'R') setTool('rotate');
     if (e.key === 's' || e.key === 'S') setTool('scale');
   }
 
-  // Shift+D to duplicate (like Blender) — plain D conflicts with browser shortcuts
+  // Shift+D to duplicate
   if (e.shiftKey && (e.key === 'd' || e.key === 'D')) {
     e.preventDefault();
     const sel = objManager.getSelected();
@@ -188,11 +188,10 @@ window.addEventListener('click', (e) => {
 // ════════════════════════════════════════════════
 const exportMenu   = document.getElementById('export-menu');
 const btnExport    = document.getElementById('btn-export');
-let   exportScope  = 'scene'; // 'scene' | 'selected'
+let   exportScope  = 'scene'; 
 
 function showExportMenu() {
   const rect = btnExport.getBoundingClientRect();
-  // Position to the right of the toolbar button
   exportMenu.style.left = (rect.right + 8) + 'px';
   exportMenu.style.top  = rect.top + 'px';
   exportMenu.classList.add('visible');
@@ -216,7 +215,7 @@ document.getElementById('scope-selected').addEventListener('click', () => {
   document.getElementById('scope-scene').classList.remove('active');
 });
 
-// Format buttons — only inside export-menu
+// Format buttons
 exportMenu.querySelectorAll('.menu-item[data-fmt]').forEach(item => {
   item.addEventListener('click', () => {
     const fmt = item.dataset.fmt;
@@ -242,19 +241,30 @@ exportMenu.querySelectorAll('.menu-item[data-fmt]').forEach(item => {
   });
 });
 
-// Close on outside click
 window.addEventListener('mousedown', (e) => {
   if (!exportMenu.contains(e.target) && e.target !== btnExport) hideExportMenu();
 });
+
+// ════════════════════════════════════════════════
+// IMPORT LOGIC (NEW)
+// ════════════════════════════════════════════════
+const triggerImport = setupImporter(objManager, updateUI);
+const btnImport = document.getElementById('btn-import');
+if (btnImport) {
+  btnImport.addEventListener('click', () => triggerImport());
+}
+
+// ════════════════════════════════════════════════
+// CONTEXT MENU
+// ════════════════════════════════════════════════
 const ctxMenu    = document.getElementById('context-menu');
 const ctxTitle   = document.getElementById('ctx-title');
-let ctxTarget    = null; // the object the menu was opened for
+let ctxTarget    = null; 
 
 function showContextMenu(x, y, obj) {
   ctxTarget = obj;
   ctxTitle.textContent = obj.userData.name;
 
-  // Keep menu inside viewport
   const menuW = 180, menuH = 130;
   ctxMenu.style.left = Math.min(x, window.innerWidth  - menuW) + 'px';
   ctxMenu.style.top  = Math.min(y, window.innerHeight - menuH) + 'px';
@@ -266,16 +276,13 @@ function hideContextMenu() {
   ctxTarget = null;
 }
 
-// Rename
 document.getElementById('ctx-rename').addEventListener('click', () => {
   if (!ctxTarget) return;
-  const target = ctxTarget; // capture before hideContextMenu nulls it
+  const target = ctxTarget; 
   hideContextMenu();
-  // setTimeout lets the menu DOM removal finish before we inject the input
   setTimeout(() => startInlineRename(target), 0);
 });
 
-// Duplicate
 document.getElementById('ctx-duplicate').addEventListener('click', () => {
   if (!ctxTarget) return;
   const dupe = objManager.duplicateObject(ctxTarget);
@@ -285,7 +292,6 @@ document.getElementById('ctx-duplicate').addEventListener('click', () => {
   updateUI();
 });
 
-// Delete
 document.getElementById('ctx-delete').addEventListener('click', () => {
   if (!ctxTarget) return;
   undoStack.push({ type: 'delete', mesh: ctxTarget });
@@ -296,19 +302,16 @@ document.getElementById('ctx-delete').addEventListener('click', () => {
   updateUI();
 });
 
-// Close context menu on outside click
 window.addEventListener('mousedown', (e) => {
   if (!ctxMenu.contains(e.target)) hideContextMenu();
 });
 
-// Prevent browser's native context menu on canvas
 canvas.addEventListener('contextmenu', e => e.preventDefault());
 
 // ════════════════════════════════════════════════
-// INLINE RENAME (double-click or via context menu)
+// INLINE RENAME 
 // ════════════════════════════════════════════════
 function showRenameError(msg, x, y) {
-  // Remove any existing error
   document.querySelectorAll('.rename-error').forEach(el => el.remove());
   const el = document.createElement('div');
   el.className = 'rename-error';
@@ -321,7 +324,6 @@ function showRenameError(msg, x, y) {
 
 function startInlineRename(obj) {
   if (!obj) return;
-  // Find the h-item div by its stored _meshRef (set during updateUI)
   const items = hListEl.querySelectorAll('.h-item');
   let targetDiv = null;
   items.forEach(div => { if (div._meshRef === obj) targetDiv = div; });
@@ -334,7 +336,6 @@ function startInlineRename(obj) {
   input.type  = 'text';
   input.maxLength = 48;
 
-  // Replace div content with input (keep icon)
   const icon = targetDiv.querySelector('.ic').outerHTML;
   targetDiv.innerHTML = icon + ' ';
   targetDiv.appendChild(input);
@@ -355,15 +356,14 @@ function startInlineRename(obj) {
   let committed = false;
 
   input.addEventListener('keydown', (e) => {
-    e.stopPropagation(); // don't fire G/R/S shortcuts while typing
+    e.stopPropagation(); 
     if (e.key === 'Enter')  { e.preventDefault(); committed = true; commit(); }
-    if (e.key === 'Escape') { committed = true; updateUI(); } // cancel
+    if (e.key === 'Escape') { committed = true; updateUI(); }
   });
 
   input.addEventListener('blur', () => {
-    if (committed) return; // already handled by keydown
+    if (committed) return;
     committed = true;
-    // Blank or unchanged = cancel silently
     if (!input.value.trim() || input.value.trim() === obj.userData.name) {
       updateUI();
     } else {
@@ -384,7 +384,7 @@ function updateUI() {
   objManager.getObjects().forEach(obj => {
     const div = document.createElement('div');
     div.className = 'h-item';
-    div._meshRef = obj; // direct reference, used by startInlineRename
+    div._meshRef = obj; 
     if (sel === obj) div.classList.add('active');
 
     const iconMap = { sphere:'●', cylinder:'⬡', cone:'▲', torus:'◎', plane:'▬' };
@@ -393,14 +393,12 @@ function updateUI() {
 
     div.innerHTML = `<span class="ic">${icon}</span> ${obj.userData.name}`;
 
-    // Left-click: select
     div.addEventListener('click', (e) => {
       objManager.selectObject(obj);
       if (currentTool !== 'select') { transformControl.attach(obj); transformControl.setMode(currentTool); }
       updateUI();
     });
 
-    // Right-click on hierarchy item: context menu
     div.addEventListener('contextmenu', (e) => {
       e.preventDefault();
       e.stopPropagation();
@@ -410,7 +408,6 @@ function updateUI() {
       showContextMenu(e.clientX, e.clientY, obj);
     });
 
-    // Double-click: inline rename
     div.addEventListener('dblclick', (e) => {
       e.stopPropagation();
       startInlineRename(obj);
@@ -420,7 +417,6 @@ function updateUI() {
   });
 }
 
-// Right-click on viewport objects also opens context menu
 renderer.domElement.addEventListener('contextmenu', (e) => {
   e.preventDefault();
   mouse.x =  (e.clientX / window.innerWidth)  * 2 - 1;
