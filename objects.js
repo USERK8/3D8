@@ -52,6 +52,30 @@ export class ObjectManager {
     return mesh;
   }
 
+  // --- NEW: Add Imported Mesh ---
+  addImportedMesh(mesh) {
+    // Ensure unique name based on the file's internal mesh name
+    mesh.userData.name = this._uniqueName(mesh.name || 'Imported_Mesh');
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
+
+    // Clone materials so our red selection highlight doesn't bleed to other objects
+    if (mesh.material) {
+      if (Array.isArray(mesh.material)) {
+        mesh.material = mesh.material.map(m => m.clone());
+      } else {
+        mesh.material = mesh.material.clone();
+      }
+    } else {
+      mesh.material = MAT_DEFAULT.clone();
+    }
+
+    this.scene.add(mesh);
+    this.objects.push(mesh);
+    this.selectObject(mesh); // Auto-select it upon import
+    return mesh;
+  }
+
   duplicateObject(obj) {
     if (!obj) return null;
     const newMesh = obj.clone();
@@ -95,15 +119,42 @@ export class ObjectManager {
     this.deleteObject(this.selected);
   }
 
+  // --- UPDATED: Smart color backup & restore ---
   selectObject(obj) {
+    // 1. DESELECT current object (Restore its ORIGINAL color instead of forcing white)
     if (this.selected) {
-      this.selected.material.color.set(0xffffff);
-      this.selected.material.emissive.set(0x000000);
+      if (this.selected.userData.originalColor) {
+        this.selected.material.color.copy(this.selected.userData.originalColor);
+      } else {
+        this.selected.material.color.set(0xffffff); // fallback to white
+      }
+      
+      if (this.selected.material.emissive) {
+          if (this.selected.userData.originalEmissive) {
+            this.selected.material.emissive.copy(this.selected.userData.originalEmissive);
+          } else {
+            this.selected.material.emissive.set(0x000000);
+          }
+      }
     }
+    
     this.selected = obj;
+    
+    // 2. SELECT new object (Backup its color, then turn it red)
     if (this.selected) {
+      // Backup the original colors if we haven't already
+      if (!this.selected.userData.originalColor) {
+         this.selected.userData.originalColor = this.selected.material.color.clone();
+         if (this.selected.material.emissive) {
+             this.selected.userData.originalEmissive = this.selected.material.emissive.clone();
+         }
+      }
+      
+      // Make it glow Dark Neon Red
       this.selected.material.color.set(0xff0033);
-      this.selected.material.emissive.set(0x440011);
+      if (this.selected.material.emissive) {
+          this.selected.material.emissive.set(0x440011);
+      }
     }
   }
 
