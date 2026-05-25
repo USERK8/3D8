@@ -6,6 +6,7 @@ import { createScene, createCamera, createRenderer, createLights, createGrid } f
 import { createControls, handleResize } from './controls.js';
 import { ObjectManager } from './objects.js';
 import { exportModel } from './export.js';
+import { setupImporter } from './import.js';
 
 const canvas = document.getElementById('viewport');
 const scene = createScene();
