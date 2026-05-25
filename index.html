@@ -5,11 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>3D Modeler</title>
   <style>
-    * {
-      margin: 0;
-      padding: 0;
-      box-sizing: border-box;
-    }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
 
     body {
       background: #1a1a1a;
@@ -18,39 +14,27 @@
       color: #ccc;
     }
 
-    /* The canvas fills the whole window */
-    #viewport {
-      width: 100vw;
-      height: 100vh;
-      display: block;
-    }
+    #viewport { width: 100vw; height: 100vh; display: block; }
 
-    /* HUD overlay - top left info */
+    /* ── HUD top-left ── */
     #hud {
       position: fixed;
-      top: 12px;
-      left: 12px;
-      background: rgba(30, 30, 30, 0.85);
+      top: 12px; left: 12px;
+      background: rgba(30,30,30,0.85);
       border: 1px solid #333;
       border-radius: 4px;
       padding: 8px 12px;
       font-size: 11px;
       color: #888;
-      pointer-events: none; /* clicks pass through to canvas */
+      pointer-events: none;
       line-height: 1.8;
     }
+    #hud span { color: #e8a838; font-weight: bold; }
 
-    #hud span {
-      color: #e8a838;
-      font-weight: bold;
-    }
-
-    /* Bottom status bar */
+    /* ── Status bar bottom ── */
     #statusbar {
       position: fixed;
-      bottom: 0;
-      left: 0;
-      right: 0;
+      bottom: 0; left: 0; right: 0;
       height: 24px;
       background: #232323;
       border-top: 1px solid #333;
@@ -61,9 +45,65 @@
       color: #666;
       gap: 24px;
     }
+    #statusbar .sep { color: #333; }
+    #statusbar .highlight { color: #e8a838; }
 
-    #statusbar .sep {
-      color: #333;
+    /* ── Shift+A popup menu ── */
+    #add-menu {
+      position: fixed;
+      background: #2a2a2a;
+      border: 1px solid #444;
+      border-radius: 5px;
+      padding: 6px 0;
+      min-width: 180px;
+      display: none;
+      z-index: 100;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.6);
+    }
+    #add-menu.visible { display: block; }
+
+    .menu-title {
+      padding: 4px 14px 6px;
+      font-size: 10px;
+      color: #555;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      border-bottom: 1px solid #333;
+      margin-bottom: 4px;
+    }
+
+    .menu-item {
+      padding: 7px 14px;
+      font-size: 12px;
+      color: #bbb;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      transition: background 0.1s;
+    }
+    .menu-item:hover { background: #3a3a3a; color: #fff; }
+    .menu-item .icon { color: #e8a838; font-size: 13px; width: 14px; text-align: center; }
+
+    /* ── Axis gizmo canvas (top-right) ── */
+    #gizmo {
+      position: fixed;
+      top: 12px; right: 12px;
+      width: 90px; height: 90px;
+      pointer-events: none;
+    }
+
+    /* ── View label (under gizmo) ── */
+    #view-label {
+      position: fixed;
+      top: 108px; right: 12px;
+      font-size: 10px;
+      color: #555;
+      text-align: center;
+      width: 90px;
+      pointer-events: none;
+      letter-spacing: 1px;
+      text-transform: uppercase;
     }
   </style>
 </head>
@@ -71,28 +111,39 @@
 
   <canvas id="viewport"></canvas>
 
-  <!-- HUD: controls cheatsheet -->
   <div id="hud">
     <span>CONTROLS</span><br>
     Left drag &nbsp;→ Orbit<br>
     Right drag → Pan<br>
     Scroll &nbsp;&nbsp;&nbsp;&nbsp;→ Zoom<br>
+    <span>Shift+A</span> &nbsp;→ Add object
   </div>
 
-  <!-- Status bar at the bottom -->
   <div id="statusbar">
     <span>3D Modeler</span>
     <span class="sep">|</span>
-    <span>Stage 1 — Viewport</span>
+    <span id="obj-count">Objects: 1</span>
     <span class="sep">|</span>
     <span id="fps">-- fps</span>
+    <span class="sep">|</span>
+    <span id="cam-pos">Cam: --</span>
   </div>
 
-  <!--
-    Three.js from CDN.
-    importmap lets us write: import * as THREE from 'three'
-    instead of a full URL everywhere.
-  -->
+  <!-- Shift+A Add menu -->
+  <div id="add-menu">
+    <div class="menu-title">Add Mesh</div>
+    <div class="menu-item" data-type="cube">      <span class="icon">■</span> Cube</div>
+    <div class="menu-item" data-type="sphere">    <span class="icon">●</span> UV Sphere</div>
+    <div class="menu-item" data-type="cylinder">  <span class="icon">⬡</span> Cylinder</div>
+    <div class="menu-item" data-type="cone">      <span class="icon">▲</span> Cone</div>
+    <div class="menu-item" data-type="torus">     <span class="icon">◎</span> Torus</div>
+    <div class="menu-item" data-type="plane">     <span class="icon">▬</span> Plane</div>
+  </div>
+
+  <!-- Axis gizmo overlay -->
+  <canvas id="gizmo" width="90" height="90"></canvas>
+  <div id="view-label">PERSP</div>
+
   <script type="importmap">
     {
       "imports": {
@@ -107,46 +158,44 @@
     import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 
     // ─────────────────────────────────────────────
-    // 1. RENDERER
-    // The renderer draws 3D scenes onto the canvas.
+    // RENDERER
     // ─────────────────────────────────────────────
     const canvas = document.getElementById('viewport');
-    const renderer = new THREE.WebGLRenderer({
-      canvas,
-      antialias: true  // smooth edges
-    });
+    const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
     renderer.setSize(window.innerWidth, window.innerHeight);
-    renderer.setPixelRatio(window.devicePixelRatio); // sharp on retina screens
-    renderer.shadowMap.enabled = true;               // allow shadows later
+    renderer.setPixelRatio(window.devicePixelRatio);
+    renderer.shadowMap.enabled = true;
 
     // ─────────────────────────────────────────────
-    // 2. SCENE
-    // The scene is a container that holds all 3D objects.
+    // SCENE
     // ─────────────────────────────────────────────
     const scene = new THREE.Scene();
-    scene.background = new THREE.Color(0x1a1a1a); // dark Blender-style bg
+    scene.background = new THREE.Color(0x1a1a1a);
 
     // ─────────────────────────────────────────────
-    // 3. CAMERA
-    // PerspectiveCamera mimics how human eyes see.
-    // args: fov, aspect ratio, near clip, far clip
+    // CAMERA
+    // FIX: near clip raised from 0.01 → 0.1
+    // 0.01 was too small — camera would clip into
+    // objects when zooming, making them vanish.
     // ─────────────────────────────────────────────
     const camera = new THREE.PerspectiveCamera(
-      60,                                          // 60° field of view
-      window.innerWidth / window.innerHeight,      // aspect ratio
-      0.01,                                        // near clip (min render distance)
-      1000                                         // far clip (max render distance)
+      60,
+      window.innerWidth / window.innerHeight,
+      0.1,    // ← was 0.01, caused the zoom vanish bug
+      2000
     );
-    camera.position.set(5, 4, 7); // start position: slightly above and to the side
-    camera.lookAt(0, 0, 0);       // look at the center of the scene
+    camera.position.set(5, 4, 7);
+    camera.lookAt(0, 0, 0);
 
     // ─────────────────────────────────────────────
-    // 4. ORBIT CONTROLS
-    // Lets the user rotate/pan/zoom with the mouse.
+    // ORBIT CONTROLS
+    // Also set min/max zoom to prevent clipping
     // ─────────────────────────────────────────────
     const controls = new OrbitControls(camera, canvas);
-    controls.enableDamping = true;    // smooth inertia feel
+    controls.enableDamping = true;
     controls.dampingFactor = 0.08;
+    controls.minDistance = 0.5;   // ← can't zoom closer than 0.5 units
+    controls.maxDistance = 500;
     controls.mouseButtons = {
       LEFT: THREE.MOUSE.ROTATE,
       MIDDLE: THREE.MOUSE.DOLLY,
@@ -154,78 +203,224 @@
     };
 
     // ─────────────────────────────────────────────
-    // 5. GRID
-    // InfiniteGridHelper gives a Blender-like floor grid.
-    // We build a simple one with GridHelper.
+    // GRID — large enough to fill viewport at any zoom
+    // Two layers: coarse (1-unit) + fine (0.1-unit)
     // ─────────────────────────────────────────────
-
-    // Main grid (1-unit cells)
-    const grid = new THREE.GridHelper(
-      30,        // total size
-      30,        // number of divisions
-      0x444444,  // center line color
-      0x2a2a2a   // grid line color
-    );
+    const grid = new THREE.GridHelper(200, 200, 0x444444, 0x2a2a2a);
     scene.add(grid);
 
-    // Thinner subdivisions grid (0.1-unit cells) for precision
-    const gridSub = new THREE.GridHelper(30, 300, 0x222222, 0x222222);
-    scene.add(gridSub);
-
     // ─────────────────────────────────────────────
-    // 6. WORLD AXES (X=red, Y=green, Z=blue)
-    // Blender-style axis indicator at the origin.
+    // LIGHTS
     // ─────────────────────────────────────────────
-    const axes = new THREE.AxesHelper(1.5);
-    scene.add(axes);
-
-    // ─────────────────────────────────────────────
-    // 7. LIGHTS
-    // ─────────────────────────────────────────────
-
-    // Ambient light: soft overall illumination
-    const ambient = new THREE.AmbientLight(0xffffff, 0.4);
-    scene.add(ambient);
-
-    // Directional light: like the sun, casts shadows
+    scene.add(new THREE.AmbientLight(0xffffff, 0.4));
     const dirLight = new THREE.DirectionalLight(0xffffff, 1.0);
     dirLight.position.set(5, 10, 5);
     dirLight.castShadow = true;
     scene.add(dirLight);
 
     // ─────────────────────────────────────────────
-    // 8. PLACEHOLDER CUBE
-    // Just to confirm the viewport is working.
-    // We'll replace this in Stage 2 with a real toolbar.
+    // DEFAULT CUBE
     // ─────────────────────────────────────────────
-    const cubeGeo = new THREE.BoxGeometry(1, 1, 1);
-    const cubeMat = new THREE.MeshStandardMaterial({
-      color: 0xe8a838,   // orange, Blender's default cube color
-      roughness: 0.6,
-      metalness: 0.1
-    });
-    const cube = new THREE.Mesh(cubeGeo, cubeMat);
-    cube.castShadow = true;
-    cube.receiveShadow = true;
-    cube.position.y = 0.5; // sit on the grid
-    scene.add(cube);
+    let objectCount = 0;
+
+    function makeMaterial() {
+      return new THREE.MeshStandardMaterial({
+        color: 0xe8a838,
+        roughness: 0.6,
+        metalness: 0.1
+      });
+    }
+
+    function addObject(type) {
+      let geo;
+      switch(type) {
+        case 'cube':     geo = new THREE.BoxGeometry(1,1,1); break;
+        case 'sphere':   geo = new THREE.SphereGeometry(0.6, 32, 16); break;
+        case 'cylinder': geo = new THREE.CylinderGeometry(0.5, 0.5, 1, 32); break;
+        case 'cone':     geo = new THREE.ConeGeometry(0.5, 1, 32); break;
+        case 'torus':    geo = new THREE.TorusGeometry(0.5, 0.2, 16, 48); break;
+        case 'plane':    geo = new THREE.PlaneGeometry(2, 2); break;
+        default:         geo = new THREE.BoxGeometry(1,1,1);
+      }
+
+      const mesh = new THREE.Mesh(geo, makeMaterial());
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
+
+      // Place it slightly offset so objects don't stack exactly
+      const offset = objectCount * 0.3;
+      mesh.position.set(offset, 0.5, offset);
+
+      // Planes need to be rotated to lie flat
+      if (type === 'plane') {
+        mesh.rotation.x = -Math.PI / 2;
+        mesh.position.y = 0.01;
+      }
+
+      scene.add(mesh);
+      objectCount++;
+      document.getElementById('obj-count').textContent = `Objects: ${objectCount}`;
+    }
+
+    // Add the default cube on load
+    addObject('cube');
 
     // ─────────────────────────────────────────────
-    // 9. RENDER LOOP
-    // requestAnimationFrame calls this ~60 times/sec.
+    // SHIFT+A MENU
     // ─────────────────────────────────────────────
-    const fpsEl = document.getElementById('fps');
-    let lastTime = performance.now();
-    let frames = 0;
+    const addMenu = document.getElementById('add-menu');
+
+    function showMenu(x, y) {
+      addMenu.style.left = x + 'px';
+      addMenu.style.top  = y + 'px';
+      addMenu.classList.add('visible');
+    }
+
+    function hideMenu() {
+      addMenu.classList.remove('visible');
+    }
+
+    // Keyboard: Shift+A
+    window.addEventListener('keydown', (e) => {
+      if (e.key === 'A' && e.shiftKey) {
+        e.preventDefault();
+        // Open at center of screen
+        const cx = window.innerWidth / 2;
+        const cy = window.innerHeight / 2;
+        showMenu(cx, cy);
+      }
+      if (e.key === 'Escape') hideMenu();
+    });
+
+    // Click on menu items
+    addMenu.querySelectorAll('.menu-item').forEach(item => {
+      item.addEventListener('click', () => {
+        addObject(item.dataset.type);
+        hideMenu();
+      });
+    });
+
+    // Click outside closes menu
+    window.addEventListener('mousedown', (e) => {
+      if (!addMenu.contains(e.target)) hideMenu();
+    });
+
+    // ─────────────────────────────────────────────
+    // AXIS GIZMO (top-right corner)
+    // Draws X/Y/Z arrows that rotate with the camera.
+    // This is a 2D canvas drawn each frame — no extra
+    // Three.js scene needed.
+    // ─────────────────────────────────────────────
+    const gizmoCanvas = document.getElementById('gizmo');
+    const gCtx = gizmoCanvas.getContext('2d');
+    const viewLabel = document.getElementById('view-label');
+
+    // Axis definitions: label, color, 3D direction vector
+    const gizmoAxes = [
+      { label: 'X',  color: '#e25555', neg: false, dir: new THREE.Vector3(1,0,0)  },
+      { label: '-X', color: '#6b2222', neg: true,  dir: new THREE.Vector3(-1,0,0) },
+      { label: 'Y',  color: '#6aaa3a', neg: false, dir: new THREE.Vector3(0,1,0)  },
+      { label: '-Y', color: '#2d5218', neg: true,  dir: new THREE.Vector3(0,-1,0) },
+      { label: 'Z',  color: '#4a90d9', neg: false, dir: new THREE.Vector3(0,0,1)  },
+      { label: '-Z', color: '#1e3d6b', neg: true,  dir: new THREE.Vector3(0,0,-1) },
+    ];
+
+    function drawGizmo() {
+      const W = gizmoCanvas.width;
+      const H = gizmoCanvas.height;
+      const cx = W / 2;
+      const cy = H / 2;
+      const radius = 30;
+
+      gCtx.clearRect(0, 0, W, H);
+
+      // Get camera's rotation matrix (no position)
+      const camMatrix = new THREE.Matrix4().extractRotation(camera.matrixWorldInverse);
+
+      // Project each axis tip into 2D
+      const projected = gizmoAxes.map(axis => {
+        const v = axis.dir.clone().applyMatrix4(camMatrix);
+        return {
+          ...axis,
+          x: cx + v.x * radius,
+          y: cy - v.y * radius,  // flip Y for canvas coords
+          z: v.z                 // depth for sorting
+        };
+      });
+
+      // Sort back-to-front (draw negative/far axes first)
+      projected.sort((a, b) => a.z - b.z);
+
+      projected.forEach(ax => {
+        const lineLen = ax.neg ? radius * 0.55 : radius;
+
+        // Line from center to tip
+        gCtx.beginPath();
+        gCtx.moveTo(cx, cy);
+        gCtx.lineTo(ax.x, ax.y);
+        gCtx.strokeStyle = ax.color;
+        gCtx.lineWidth = ax.neg ? 1 : 2;
+        gCtx.stroke();
+
+        // Dot at tip (bigger for positive axes)
+        const dotR = ax.neg ? 3 : 6;
+        gCtx.beginPath();
+        gCtx.arc(ax.x, ax.y, dotR, 0, Math.PI * 2);
+        gCtx.fillStyle = ax.color;
+        gCtx.fill();
+
+        // Label (only for positive axes to avoid clutter)
+        if (!ax.neg) {
+          gCtx.fillStyle = '#fff';
+          gCtx.font = 'bold 10px Courier New';
+          gCtx.textAlign = 'center';
+          gCtx.textBaseline = 'middle';
+          gCtx.fillText(ax.label, ax.x, ax.y);
+        }
+      });
+    }
+
+    // ─────────────────────────────────────────────
+    // VIEW LABEL (PERSP / TOP / FRONT / etc.)
+    // Detects approximate cardinal views
+    // ─────────────────────────────────────────────
+    function updateViewLabel() {
+      const dir = new THREE.Vector3();
+      camera.getWorldDirection(dir);
+
+      const threshold = 0.97;
+      let label = 'PERSP';
+
+      if (dir.y >  threshold) label = 'BOTTOM';
+      else if (dir.y < -threshold) label = 'TOP';
+      else if (Math.abs(dir.x) < 0.1 && dir.z >  threshold) label = 'FRONT';
+      else if (Math.abs(dir.x) < 0.1 && dir.z < -threshold) label = 'BACK';
+      else if (dir.x >  threshold) label = 'LEFT';
+      else if (dir.x < -threshold) label = 'RIGHT';
+
+      viewLabel.textContent = label;
+    }
+
+    // ─────────────────────────────────────────────
+    // RENDER LOOP
+    // ─────────────────────────────────────────────
+    const fpsEl   = document.getElementById('fps');
+    const camPosEl = document.getElementById('cam-pos');
+    let lastTime = performance.now(), frames = 0;
 
     function animate() {
       requestAnimationFrame(animate);
-
-      controls.update(); // required when damping is enabled
-
+      controls.update();
       renderer.render(scene, camera);
+      drawGizmo();
+      updateViewLabel();
 
-      // FPS counter
+      // Status bar camera position
+      const p = camera.position;
+      camPosEl.textContent =
+        `Cam (${p.x.toFixed(1)}, ${p.y.toFixed(1)}, ${p.z.toFixed(1)})`;
+
+      // FPS
       frames++;
       const now = performance.now();
       if (now - lastTime >= 1000) {
@@ -238,8 +433,7 @@
     animate();
 
     // ─────────────────────────────────────────────
-    // 10. RESIZE HANDLER
-    // Keep canvas filling the window on resize.
+    // RESIZE
     // ─────────────────────────────────────────────
     window.addEventListener('resize', () => {
       camera.aspect = window.innerWidth / window.innerHeight;
