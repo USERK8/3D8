@@ -17,3 +17,84 @@
 .menu-item { padding: 7px 13px; font-size: 12px; color: #ccc; cursor: pointer; display: flex; align-items: center; gap: 10px; transition: 0.1s;}
 .menu-item:hover { background: rgba(255, 255, 255, 0.1); color: #fff; }
 .menu-item .ic { color: #ff0033; width: 14px; text-align: center; }
+
+/* ── Right-click context menu ── */
+#context-menu {
+  position: fixed;
+  background: rgba(15, 15, 22, 0.75);
+  backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px);
+  border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 8px;
+  padding: 5px 0;
+  min-width: 175px;
+  display: none;
+  z-index: 500;
+  box-shadow: 0 12px 36px rgba(0,0,0,0.6);
+  user-select: none;
+}
+#context-menu.visible { display: block; }
+
+.ctx-header {
+  padding: 5px 13px 6px;
+  font-size: 10px;
+  color: #555;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  border-bottom: 1px solid rgba(255,255,255,0.06);
+  margin-bottom: 3px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 165px;
+}
+
+.ctx-item {
+  padding: 7px 13px;
+  font-size: 12px;
+  color: #ccc;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  transition: background 0.1s;
+}
+.ctx-item:hover { background: rgba(255,255,255,0.08); color: #fff; }
+.ctx-item .ctx-ic { width: 14px; text-align: center; font-size: 13px; }
+.ctx-item.danger { color: #ff4455; }
+.ctx-item.danger:hover { background: rgba(255,30,50,0.15); }
+
+.ctx-separator {
+  height: 1px;
+  background: rgba(255,255,255,0.06);
+  margin: 4px 0;
+}
+
+/* ── Inline rename input inside hierarchy ── */
+.h-item input.rename-input {
+  background: rgba(0,0,0,0.5);
+  border: 1px solid #ff0033;
+  border-radius: 3px;
+  color: #fff;
+  font-size: 11px;
+  font-family: 'Courier New', monospace;
+  padding: 1px 5px;
+  width: 130px;
+  outline: none;
+}
+
+.rename-error {
+  position: fixed;
+  background: rgba(200,0,30,0.85);
+  color: #fff;
+  font-size: 11px;
+  padding: 5px 10px;
+  border-radius: 4px;
+  z-index: 600;
+  pointer-events: none;
+  animation: fadeout 2s forwards;
+}
+@keyframes fadeout {
+  0%   { opacity: 1; }
+  60%  { opacity: 1; }
+  100% { opacity: 0; }
+}
