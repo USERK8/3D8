@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { TransformControls } from 'three/addons/controls/TransformControls.js';
-import { ViewHelper } from 'three/addons/helpers/ViewHelper.js'; // NEW: The real Blender gizmo!
+import { ViewHelper } from 'three/addons/helpers/ViewHelper.js'; // The official clickable gizmo!
 
 import { createScene, createCamera, createRenderer, createLights, createGrid } from './scene.js';
 import { createControls, handleResize } from './controls.js';
@@ -11,26 +11,27 @@ const canvas = document.getElementById('viewport');
 const scene = createScene();
 const camera = createCamera();
 const renderer = createRenderer(canvas);
-renderer.autoClear = false; // VERY IMPORTANT: Allows us to draw the gizmo on top of the scene
+renderer.autoClear = false; // Required so we can draw the gizmo OVER the scene
 
 createLights(scene);
 createGrid(scene);
 
 const orbit = createControls(camera, canvas);
 const objManager = new ObjectManager(scene);
+const clock = new THREE.Clock(); // Used for smooth camera animation
 
 // --- UNDO STACK ---
 const undoStack = [];
 let dragStartState = null;
 
 // --- THE BLENDER GIZMO (VIEW HELPER) ---
-// Hide the old manual HTML elements we made earlier since ViewHelper replaces them natively
+// Hide the old manual HTML elements we made earlier
 document.getElementById('gizmo').style.display = 'none';
 document.getElementById('view-label').style.display = 'none';
 
 const viewHelper = new ViewHelper(camera, renderer.domElement);
 
-// Create an invisible clickable box over the top-right corner
+// Create an invisible clickable box over the top-right corner to catch clicks
 const viewBox = document.createElement('div');
 viewBox.style.position = 'absolute';
 viewBox.style.right = '0';
@@ -40,13 +41,12 @@ viewBox.style.width = '128px';
 viewBox.style.cursor = 'pointer';
 document.body.appendChild(viewBox);
 
-// Stop OrbitControls from grabbing the camera when clicking the gizmo
-viewBox.addEventListener('pointerdown', (e) => e.stopPropagation());
 // Handle the gizmo click (smoothly animates to Top/Front/Right views)
 viewBox.addEventListener('pointerup', (e) => {
   e.stopPropagation();
   viewHelper.handleClick(e);
 });
+viewBox.addEventListener('pointerdown', (e) => e.stopPropagation());
 
 // --- TRANSFORM CONTROLS (Move/Rotate/Scale arrows) ---
 const transformControl = new TransformControls(camera, renderer.domElement);
@@ -219,8 +219,13 @@ function animate() {
   camInfoEl.textContent = `CAM: [${camera.position.x.toFixed(1)}, ${camera.position.y.toFixed(1)}, ${camera.position.z.toFixed(1)}]`;
 
   orbit.update(); 
+  
+  // FIXED: This allows the gizmo camera to swoop around smoothly when clicked!
+  if (viewHelper.animating === true) {
+    viewHelper.update(clock.getDelta());
+  }
 
-  // FIXED: Clear manually, render scene, THEN render ViewHelper on top
+  // Draw the main scene, then draw the interactive gizmo over it
   renderer.clear();
   renderer.render(scene, camera);
   viewHelper.render(renderer);
