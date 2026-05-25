@@ -1,4 +1,3 @@
-
 import * as THREE from 'three';
 
 export function createScene() {
@@ -14,7 +13,13 @@ export function createCamera() {
     0.1, 
     2000
   );
-  camera.position.set(5, 7, 4);
+  
+  // FIXED: Tell the camera that Z is the UP direction!
+  camera.up.set(0, 0, 1);
+  
+  // Adjusted starting position for Z-up
+  camera.position.set(5, 5, 4); 
+  
   return camera;
 }
 
