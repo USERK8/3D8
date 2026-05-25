@@ -11,8 +11,8 @@ export function createControls(camera, canvas) {
   controls.maxDistance      = 150;
 
   controls.mouseButtons = {
-    LEFT:  0, // Rotate
-    RIGHT: 2  // Pan
+    LEFT:   0, // Rotate
+    MIDDLE: 2  // Pan (like Blender)
   };
 
   // Flat symmetric zoom:
