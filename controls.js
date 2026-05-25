@@ -3,61 +3,46 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 export function createControls(camera, canvas) {
   const controls = new OrbitControls(camera, canvas);
 
-  // Smooth, responsive controls
   controls.enableDamping = true;
-  controls.dampingFactor = 0.05; 
-  controls.screenSpacePanning = true; 
-  
-  // Disable native zoom entirely to stop conflicts
-  controls.enableZoom = false; 
-  
-  // Distance limits
-  controls.minDistance = 0.5; 
-  controls.maxDistance = 150; 
-  
-  // FIXED: Middle button does absolutely nothing now.
+  controls.dampingFactor = 0.05;
+  controls.screenSpacePanning = true;
+  controls.enableZoom = false; // we handle zoom manually for better feel
+
+  controls.minDistance = 0.5;
+  controls.maxDistance = 150;
+
   controls.mouseButtons = {
-    LEFT: 0,   // Left click -> Rotate
-    RIGHT: 2   // Right click -> Pan
-    // MIDDLE is intentionally left out so it does nothing
+    LEFT: 0,  // Rotate
+    RIGHT: 2  // Pan
   };
-  
-  // --- BULLETPROOF BLENDER ZOOM ---
-  let lastZoomTime = 0;
-  
+
+  // Smooth zoom: no throttle, uses exponential step so it feels
+  // consistent whether you're close or far from the target
   canvas.addEventListener('wheel', (event) => {
-    event.preventDefault(); 
-    
-    // The 100ms Cooldown Throttle 
-    // (This stops the Acer mouse from sending multiple scroll chunks at once)
-    const now = performance.now();
-    if (now - lastZoomTime < 100) return; 
-    lastZoomTime = now;
-    
-    const zoomSensitivity = 0.15; // 15% zoom step per scroll tick
+    event.preventDefault();
+
+    const zoomSensitivity = 0.1;
     const distance = camera.position.distanceTo(controls.target);
-    
-    // Prevent math from breaking if distance hits exactly 0
+
     if (distance < 0.001) {
-        camera.position.z += 0.1;
+      camera.position.z += 0.1;
     }
-    
-    // Calculate new distance based on scroll direction
-    let newDistance = event.deltaY > 0 
-        ? distance * (1 + zoomSensitivity) 
-        : distance * (1 - zoomSensitivity);
-        
-    // Clamp it to our limits
+
+    // deltaY can vary wildly between devices/browsers, so we
+    // clamp the raw value first so one "hard scroll" can't
+    // teleport the camera
+    const rawDelta = Math.sign(event.deltaY) * Math.min(Math.abs(event.deltaY), 100);
+    const factor   = 1 + rawDelta * zoomSensitivity * 0.01 * distance;
+    let newDistance = distance * factor;
     newDistance = Math.max(controls.minDistance, Math.min(controls.maxDistance, newDistance));
-    
-    // Move camera along the invisible line between the target and its current position
+
     const direction = camera.position.clone().sub(controls.target).normalize();
     camera.position.copy(controls.target).add(direction.multiplyScalar(newDistance));
-    
-    controls.update(); 
+
+    controls.update();
     camera.updateProjectionMatrix();
   }, { passive: false });
-  
+
   return controls;
 }
 
