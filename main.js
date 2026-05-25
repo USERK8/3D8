@@ -246,12 +246,11 @@ function showRenameError(msg, x, y) {
 }
 
 function startInlineRename(obj) {
-  // Find the h-item div for this object and replace its text with an input
+  if (!obj) return;
+  // Find the h-item div by its stored _meshRef (set during updateUI)
   const items = hListEl.querySelectorAll('.h-item');
   let targetDiv = null;
-  items.forEach(div => {
-    if (div.dataset.objName === obj.userData.name) targetDiv = div;
-  });
+  items.forEach(div => { if (div._meshRef === obj) targetDiv = div; });
   if (!targetDiv) return;
 
   const rect = targetDiv.getBoundingClientRect();
@@ -311,7 +310,7 @@ function updateUI() {
   objManager.getObjects().forEach(obj => {
     const div = document.createElement('div');
     div.className = 'h-item';
-    div.dataset.objName = obj.userData.name; // used by rename to find the row
+    div._meshRef = obj; // direct reference, used by startInlineRename
     if (sel === obj) div.classList.add('active');
 
     const iconMap = { sphere:'●', cylinder:'⬡', cone:'▲', torus:'◎', plane:'▬' };
