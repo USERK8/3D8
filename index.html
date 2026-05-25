@@ -9,7 +9,7 @@
   <link rel="stylesheet" href="menu.css">
 </head>
 <body>
-  
+
 <canvas id="viewport"></canvas>
 
 <div id="toolbar">
@@ -31,6 +31,7 @@
   <span id="cam-info">--</span>
 </div>
 
+<!-- Shift+A add menu -->
 <div id="add-menu">
   <div class="menu-title">Add Mesh</div>
   <div class="menu-item" data-type="cube">     <span class="ic">■</span>Cube</div>
@@ -39,6 +40,15 @@
   <div class="menu-item" data-type="cone">     <span class="ic">▲</span>Cone</div>
   <div class="menu-item" data-type="torus">    <span class="ic">◎</span>Torus</div>
   <div class="menu-item" data-type="plane">    <span class="ic">▬</span>Plane</div>
+</div>
+
+<!-- Right-click context menu -->
+<div id="context-menu">
+  <div class="ctx-header" id="ctx-title">object_name</div>
+  <div class="ctx-item" id="ctx-rename">  <span class="ctx-ic">✎</span> Rename</div>
+  <div class="ctx-item" id="ctx-duplicate"><span class="ctx-ic">⧉</span> Duplicate</div>
+  <div class="ctx-separator"></div>
+  <div class="ctx-item danger" id="ctx-delete"><span class="ctx-ic">✕</span> Delete</div>
 </div>
 
 <div id="hierarchy">
