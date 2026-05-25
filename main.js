@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { TransformControls } from 'three/addons/controls/TransformControls.js';
+import { ViewHelper } from 'three/addons/helpers/ViewHelper.js'; // NEW: The real Blender gizmo!
 
 import { createScene, createCamera, createRenderer, createLights, createGrid } from './scene.js';
 import { createControls, handleResize } from './controls.js';
@@ -10,6 +11,7 @@ const canvas = document.getElementById('viewport');
 const scene = createScene();
 const camera = createCamera();
 const renderer = createRenderer(canvas);
+renderer.autoClear = false; // VERY IMPORTANT: Allows us to draw the gizmo on top of the scene
 
 createLights(scene);
 createGrid(scene);
@@ -21,60 +23,32 @@ const objManager = new ObjectManager(scene);
 const undoStack = [];
 let dragStartState = null;
 
-// --- GIZMO SETUP ---
-const gizmoCanvas = document.getElementById('gizmo');
-const viewLabelEl = document.getElementById('view-label');
+// --- THE BLENDER GIZMO (VIEW HELPER) ---
+// Hide the old manual HTML elements we made earlier since ViewHelper replaces them natively
+document.getElementById('gizmo').style.display = 'none';
+document.getElementById('view-label').style.display = 'none';
 
-const gizmoRenderer = new THREE.WebGLRenderer({ canvas: gizmoCanvas, alpha: true, antialias: true });
-gizmoRenderer.setSize(90, 90);
-const gizmoScene = new THREE.Scene();
+const viewHelper = new ViewHelper(camera, renderer.domElement);
 
-// Orthographic camera for the gizmo so the axes don't warp
-const gizmoCamera = new THREE.OrthographicCamera(-1.2, 1.2, 1.2, -1.2, 0.1, 10);
-gizmoCamera.position.set(0, 0, 5);
-gizmoCamera.up.set(0, 0, 1); 
+// Create an invisible clickable box over the top-right corner
+const viewBox = document.createElement('div');
+viewBox.style.position = 'absolute';
+viewBox.style.right = '0';
+viewBox.style.top = '0';
+viewBox.style.height = '128px';
+viewBox.style.width = '128px';
+viewBox.style.cursor = 'pointer';
+document.body.appendChild(viewBox);
 
-// Create Blender-style Axis Lines
-function createGizmoAxis(color, euler) {
-  const group = new THREE.Group();
-  const lineMat = new THREE.LineBasicMaterial({ color: color, linewidth: 3 });
-  const lineGeo = new THREE.BufferGeometry().setFromPoints([
-    new THREE.Vector3(0, 0, 0),
-    new THREE.Vector3(0, 1, 0)
-  ]);
-  group.add(new THREE.Line(lineGeo, lineMat));
-  
-  const sphereMat = new THREE.MeshBasicMaterial({ color: color });
-  const sphereGeo = new THREE.SphereGeometry(0.18, 16, 16);
-  const sphere = new THREE.Mesh(sphereGeo, sphereMat);
-  sphere.position.set(0, 1, 0);
-  group.add(sphere);
-  
-  group.rotation.copy(euler);
-  return group;
-}
+// Stop OrbitControls from grabbing the camera when clicking the gizmo
+viewBox.addEventListener('pointerdown', (e) => e.stopPropagation());
+// Handle the gizmo click (smoothly animates to Top/Front/Right views)
+viewBox.addEventListener('pointerup', (e) => {
+  e.stopPropagation();
+  viewHelper.handleClick(e);
+});
 
-// X = Red, Y = Blue, Z = Green
-gizmoScene.add(createGizmoAxis(0xff3333, new THREE.Euler(0, 0, -Math.PI/2))); 
-gizmoScene.add(createGizmoAxis(0x4488ff, new THREE.Euler(0, 0, 0))); 
-gizmoScene.add(createGizmoAxis(0x33aa44, new THREE.Euler(Math.PI/2, 0, 0))); 
-
-function updateViewLabel() {
-  const v = new THREE.Vector3(camera.position.x, camera.position.y, camera.position.z).normalize();
-  const rx = Math.round(v.x);
-  const ry = Math.round(v.y);
-  const rz = Math.round(v.z);
-
-  if (rx === 0 && ry === 0 && rz === 1) viewLabelEl.textContent = 'TOP';
-  else if (rx === 0 && ry === 0 && rz === -1) viewLabelEl.textContent = 'BOTTOM';
-  else if (rx === 0 && ry === -1 && rz === 0) viewLabelEl.textContent = 'FRONT';
-  else if (rx === 0 && ry === 1 && rz === 0) viewLabelEl.textContent = 'BACK';
-  else if (rx === 1 && ry === 0 && rz === 0) viewLabelEl.textContent = 'RIGHT';
-  else if (rx === -1 && ry === 0 && rz === 0) viewLabelEl.textContent = 'LEFT';
-  else viewLabelEl.textContent = 'PERSP';
-}
-
-// --- TRANSFORM CONTROLS ---
+// --- TRANSFORM CONTROLS (Move/Rotate/Scale arrows) ---
 const transformControl = new TransformControls(camera, renderer.domElement);
 scene.add(transformControl);
 
@@ -119,7 +93,7 @@ document.getElementById('btn-move').onclick = () => setTool('translate');
 document.getElementById('btn-rotate').onclick = () => setTool('rotate');
 document.getElementById('btn-scale').onclick = () => setTool('scale');
 
-// --- RAYCASTING ---
+// --- RAYCASTING (Object Selection) ---
 const raycaster = new THREE.Raycaster();
 const mouse = new THREE.Vector2();
 let isOrbiting = false;
@@ -236,4 +210,23 @@ function animate() {
 
   const now = performance.now();
   frames++;
-  if (now >= lastTime + 10
+  if (now >= lastTime + 1000) {
+    fpsEl.textContent = `${frames} fps`;
+    frames = 0;
+    lastTime = now;
+  }
+
+  camInfoEl.textContent = `CAM: [${camera.position.x.toFixed(1)}, ${camera.position.y.toFixed(1)}, ${camera.position.z.toFixed(1)}]`;
+
+  orbit.update(); 
+
+  // FIXED: Clear manually, render scene, THEN render ViewHelper on top
+  renderer.clear();
+  renderer.render(scene, camera);
+  viewHelper.render(renderer);
+}
+
+// Start the app
+setTool('translate'); 
+updateUI();
+animate();
