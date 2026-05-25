@@ -12,15 +12,6 @@
   
 <canvas id="viewport"></canvas>
 
-<div id="hud">
-  <b>NAVIGATE</b><br>
-  Left drag → Orbit &nbsp;&nbsp; Right drag → Pan &nbsp;&nbsp; Scroll → Zoom<br>
-  <b>SELECT &amp; TRANSFORM</b><br>
-  Click obj → Select &nbsp;&nbsp; <b>G</b> Move &nbsp;&nbsp; <b>R</b> Rotate &nbsp;&nbsp; <b>S</b> Scale<br>
-  (then X/Y/Z to lock axis, Enter/Click to confirm, Esc cancel)<br>
-  <b>Shift+A</b> → Add mesh &nbsp;&nbsp; <b>Del</b> → Delete selected
-</div>
-
 <div id="toolbar">
   <button class="tool-btn active" id="btn-select">Select</button>
   <button class="tool-btn" id="btn-move">Move (G)</button>
@@ -50,8 +41,7 @@
   <div class="menu-item" data-type="plane">    <span class="ic">▬</span>Plane</div>
 </div>
 
-<canvas id="gizmo" width="90" height="90"></canvas>
-<div id="view-label">PERSP</div>
+<canvas id="gizmo" width="128" height="128"></canvas>
 
 <script type="importmap">
 {
