@@ -223,7 +223,6 @@ exportMenu.querySelectorAll('.menu-item[data-fmt]').forEach(item => {
     if (exportScope === 'selected') {
       const sel = objManager.getSelected();
       if (!sel) {
-        // Show error toast and stay open
         document.querySelectorAll('.export-toast').forEach(e => e.remove());
         const el = document.createElement('div');
         el.className = 'export-toast';
@@ -234,9 +233,9 @@ exportMenu.querySelectorAll('.menu-item[data-fmt]').forEach(item => {
         setTimeout(() => el.remove(), 2500);
         return;
       }
-      exportModel(sel, fmt, sel.userData.name);
+      exportModel([sel], fmt, sel.userData.name);
     } else {
-      exportModel(objManager._exportGroup(THREE), fmt, 'scene');
+      exportModel(objManager.getObjects(), fmt, 'scene');
     }
     hideExportMenu();
   });
