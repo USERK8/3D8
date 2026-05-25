@@ -8,15 +8,16 @@ export function createControls(camera, canvas) {
   controls.dampingFactor = 0.05; // Blender-like smoothness
   controls.screenSpacePanning = true; 
   
-  // FIXED: Stop the infinite zoom glitch!
-  controls.enableZoom = true;
-  controls.zoomSpeed = 1.0;
+  // THE ZOOM FIX 2.0
+  // Tanking this multiplier to handle high-resolution scroll wheels/trackpads.
+  // If it is STILL too fast, change this to 0.005 or 0.001!
+  controls.zoomSpeed = 0.01; 
   
-  // This stops the camera from clipping through the 0,0,0 origin and flipping out
-  controls.minDistance = 1.0; 
-  // This stops you from zooming out into the infinite void
-  controls.maxDistance = 500; 
+  // Hard limits
+  controls.minDistance = 0.5; 
+  controls.maxDistance = 150; 
   
+  // Mouse button mapping
   controls.mouseButtons = {
     LEFT: 0,    // ROTATE
     MIDDLE: 1,  // DOLLY (zoom)
