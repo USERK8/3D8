@@ -143,7 +143,7 @@ window.addEventListener('keydown', (event) => {
   }
 
   if (!event.ctrlKey) {
-    if (event.key === 'g' || event.key === 'G') setTool('translate');
+    if (event.key === 'w' || event.key === 'G') setTool('translate');
     if (event.key === 'r' || event.key === 'R') setTool('rotate');
     if (event.key === 's' || event.key === 'S') setTool('scale');
   }
