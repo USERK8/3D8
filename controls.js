@@ -1,35 +1,25 @@
 import * as THREE from 'three';
-import { TrackballControls } from 'three/addons/controls/TrackballControls.js';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 
 export function createControls(camera, canvas) {
-  const controls = new TrackballControls(camera, canvas);
+  const controls = new OrbitControls(camera, canvas);
 
-  controls.rotateSpeed = 2.0;
-  controls.zoomSpeed   = 0;
-  controls.panSpeed    = 0.8;
-  controls.noZoom      = true;
-  controls.noPan       = true;
-  controls.noRotate    = false;
-  controls.staticMoving = false;
-  controls.dynamicDampingFactor = 0.15;
+  controls.enableDamping      = true;
+  controls.dampingFactor      = 0.05;
+  controls.screenSpacePanning = true;
+  controls.enableZoom         = false;
 
-  // LMB=nothing (freed for selection), MMB=rotate, Shift+MMB=pan
+  // Move rotate from LMB to MMB, free LMB for selection
+  // Shift+MMB = pan (OrbitControls does this natively when shiftKey is held)
   controls.mouseButtons = {
     LEFT:   -1,
     MIDDLE: THREE.MOUSE.ROTATE,
     RIGHT:  -1,
   };
 
-  canvas.addEventListener('mousedown', e => {
-    if (e.button !== 1) return;
-    if (e.shiftKey) {
-      controls.mouseButtons.MIDDLE = THREE.MOUSE.PAN;
-      controls.noPan = false;
-    } else {
-      controls.mouseButtons.MIDDLE = THREE.MOUSE.ROTATE;
-      controls.noPan = true;
-    }
-  });
+  // No vertical rotation limit
+  controls.minPolarAngle = 0;
+  controls.maxPolarAngle = Math.PI;
 
   // ── Scroll → Zoom (no limits) ──
   const ZOOM_FACTOR = 1.1;
