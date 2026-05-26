@@ -116,7 +116,8 @@ function enterMeshMode() {
   toolbar.style.display = 'none';
   meshToolbar.style.display = 'flex';
   transformControl.detach();
-  meshEditor.enter(sel);
+  meshEditor.enter(sel); // always resets to vertex inside
+  setMeshSubMode('vertex');
   updateUI();
 }
 
