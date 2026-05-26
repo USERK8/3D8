@@ -1,49 +1,51 @@
 import * as THREE from 'three';
 
-const VERT_SIZE   = 0.04;
-const VERT_COLOR  = 0xffaa00;
-const VERT_SEL    = 0xff3300;
-const EDGE_COLOR  = 0x44aaff;
-const FACE_COLOR  = 0x4466ff;
+const VERT_COLOR   = 0xffaa00;
+const VERT_SEL     = 0xff3300;
+const EDGE_COLOR   = 0x44aaff;
+const EDGE_SEL     = 0xff6600;
+const FACE_COLOR   = 0x4466ff;
+const FACE_SEL     = 0xff4422;
 const FACE_OPACITY = 0.18;
+const FACE_SEL_OPACITY = 0.45;
+const VERT_RADIUS  = 0.035;   // world-space sphere radius
 
 export class MeshEditor {
   constructor(scene, camera, renderer, orbitControls) {
-    this.scene          = scene;
-    this.camera         = camera;
-    this.renderer       = renderer;
-    this.orbit          = orbitControls;
-    this.targetMesh     = null;
+    this.scene     = scene;
+    this.camera    = camera;
+    this.renderer  = renderer;
+    this.orbit     = orbitControls;
+    this.targetMesh = null;
 
-    // Sub-element groups
-    this.vertGroup  = new THREE.Group();
-    this.edgeGroup  = new THREE.Group();
-    this.faceGroup  = new THREE.Group();
+    this.vertGroup = new THREE.Group();
+    this.edgeGroup = new THREE.Group();
+    this.faceGroup = new THREE.Group();
     scene.add(this.vertGroup, this.edgeGroup, this.faceGroup);
 
-    // Edit mode: 'vertex' | 'edge' | 'face'
     this.subMode = 'vertex';
 
-    // Selected sub-elements (indices)
     this.selectedVerts = new Set();
-    this.selectedEdges = new Set(); // edge key "a_b"
-    this.selectedFaces = new Set(); // face index
+    this.selectedEdges = new Set();  // edge key "a_b"
+    this.selectedFaces = new Set();  // face (triangle) index
 
-    // Drag state
-    this._dragging    = false;
-    this._dragStart   = null;   // {x,y} screen
-    this._dragPlane   = new THREE.Plane();
-    this._dragOffset  = new THREE.Vector3();
-    this._hitPoint    = new THREE.Vector3();
-    this._raycaster   = new THREE.Raycaster();
+    this._dragging   = false;
+    this._dragStart  = null;
+    this._dragPlane  = new THREE.Plane();
+    this._lastDragPt = null;
+    this._raycaster  = new THREE.Raycaster();
     this._raycaster.params.Points.threshold = 0.08;
+
+    // Internal maps rebuilt on _buildHelpers
+    this._vertMeshes = [];   // [i] → sphere Mesh for vertex i
+    this._edgeKeys   = [];   // [i] → "a_b" key for edge i (line pair i*2, i*2+1)
+    this._faceTriMap = [];   // [faceIndex] → triangle index in geometry
 
     this._onPointerDown = this._onPointerDown.bind(this);
     this._onPointerMove = this._onPointerMove.bind(this);
     this._onPointerUp   = this._onPointerUp.bind(this);
   }
 
-  // ── Enter mesh edit mode on a mesh ──
   enter(mesh) {
     this.targetMesh = mesh;
     this.selectedVerts.clear();
@@ -57,7 +59,6 @@ export class MeshEditor {
     window.addEventListener('pointerup',   this._onPointerUp);
   }
 
-  // ── Exit mesh edit mode ──
   exit() {
     this._clearHelpers();
     this.targetMesh = null;
@@ -79,34 +80,43 @@ export class MeshEditor {
     this._buildHelpers();
   }
 
-  // ── Build vertex/edge/face visual helpers ──
+  // ── Build helpers ──────────────────────────────────────────────────────────
   _buildHelpers() {
     this._clearHelpers();
     if (!this.targetMesh) return;
 
-    const geo  = this.targetMesh.geometry;
-    const pos  = geo.attributes.position;
-    const mat  = this.targetMesh.matrixWorld;
+    const geo = this.targetMesh.geometry;
+    const pos = geo.attributes.position;
+    const mat = this.targetMesh.matrixWorld;
 
-    // ── Vertices ──
-    const vertGeo = new THREE.BufferGeometry();
-    const verts   = [];
+    // ── Vertices: one sphere mesh per unique vertex ──
+    this._vertMeshes = [];
+    const sphereGeo = new THREE.SphereGeometry(VERT_RADIUS, 8, 6);
+
     for (let i = 0; i < pos.count; i++) {
-      const v = new THREE.Vector3().fromBufferAttribute(pos, i).applyMatrix4(mat);
-      verts.push(v.x, v.y, v.z);
+      const wv = new THREE.Vector3().fromBufferAttribute(pos, i).applyMatrix4(mat);
+      const selected = this.selectedVerts.has(i);
+      const m = new THREE.Mesh(
+        sphereGeo,
+        new THREE.MeshBasicMaterial({
+          color: selected ? VERT_SEL : VERT_COLOR,
+          depthTest: false,
+          transparent: true,
+          opacity: 0.95,
+        })
+      );
+      m.position.copy(wv);
+      m.renderOrder = 999;
+      m.userData.vertIndex = i;
+      this.vertGroup.add(m);
+      this._vertMeshes.push(m);
     }
-    vertGeo.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
-    this._vertPoints = new THREE.Points(
-      vertGeo,
-      new THREE.PointsMaterial({ color: VERT_COLOR, size: VERT_SIZE * 2, sizeAttenuation: false, depthTest: false })
-    );
-    this._vertPoints.renderOrder = 999;
-    this.vertGroup.add(this._vertPoints);
 
-    // ── Edges ──
+    // ── Edges: LineSegments with unique deduplication ──
     const index = geo.index;
     const edgeSet = new Set();
     const edgeVerts = [];
+    this._edgeKeys = [];
 
     const addEdge = (a, b) => {
       const key = a < b ? `${a}_${b}` : `${b}_${a}`;
@@ -115,6 +125,7 @@ export class MeshEditor {
       const va = new THREE.Vector3().fromBufferAttribute(pos, a).applyMatrix4(mat);
       const vb = new THREE.Vector3().fromBufferAttribute(pos, b).applyMatrix4(mat);
       edgeVerts.push(va.x, va.y, va.z, vb.x, vb.y, vb.z);
+      this._edgeKeys.push(key);
     };
 
     if (index) {
@@ -122,31 +133,70 @@ export class MeshEditor {
         const a = index.getX(i), b = index.getX(i+1), c = index.getX(i+2);
         addEdge(a, b); addEdge(b, c); addEdge(c, a);
       }
+    } else {
+      for (let i = 0; i < pos.count; i += 3) {
+        addEdge(i, i+1); addEdge(i+1, i+2); addEdge(i+2, i);
+      }
     }
 
     const edgeGeo = new THREE.BufferGeometry();
     edgeGeo.setAttribute('position', new THREE.Float32BufferAttribute(edgeVerts, 3));
+
+    // Build per-edge color buffer
+    const edgeColors = [];
+    for (let i = 0; i < this._edgeKeys.length; i++) {
+      const sel = this.selectedEdges.has(this._edgeKeys[i]);
+      const c = sel ? new THREE.Color(EDGE_SEL) : new THREE.Color(EDGE_COLOR);
+      edgeColors.push(c.r, c.g, c.b, c.r, c.g, c.b);
+    }
+    edgeGeo.setAttribute('color', new THREE.Float32BufferAttribute(edgeColors, 3));
+
     this._edgeLines = new THREE.LineSegments(
       edgeGeo,
-      new THREE.LineBasicMaterial({ color: EDGE_COLOR, depthTest: false, transparent: true, opacity: 0.7 })
+      new THREE.LineBasicMaterial({
+        vertexColors: true,
+        depthTest: false,
+        transparent: true,
+        opacity: 0.85,
+        linewidth: 1,
+      })
     );
     this._edgeLines.renderOrder = 998;
     this.edgeGroup.add(this._edgeLines);
 
-    // ── Face overlays (invisible click targets + subtle tint) ──
+    // ── Face overlays: one Mesh per triangle for independent selection ──
+    this._faceMeshes = [];
+    this._faceGroup2 = new THREE.Group();
+    this.faceGroup.add(this._faceGroup2);
+
     if (index) {
-      const faceGeo = geo.clone();
-      // transform to world space
-      faceGeo.applyMatrix4(mat);
-      this._faceMesh = new THREE.Mesh(
-        faceGeo,
-        new THREE.MeshBasicMaterial({
-          color: FACE_COLOR, transparent: true, opacity: FACE_OPACITY,
-          side: THREE.DoubleSide, depthTest: false
-        })
-      );
-      this._faceMesh.renderOrder = 997;
-      this.faceGroup.add(this._faceMesh);
+      for (let i = 0; i < index.count / 3; i++) {
+        const ai = index.getX(i*3), bi = index.getX(i*3+1), ci = index.getX(i*3+2);
+        const va = new THREE.Vector3().fromBufferAttribute(pos, ai).applyMatrix4(mat);
+        const vb = new THREE.Vector3().fromBufferAttribute(pos, bi).applyMatrix4(mat);
+        const vc = new THREE.Vector3().fromBufferAttribute(pos, ci).applyMatrix4(mat);
+
+        const fg = new THREE.BufferGeometry();
+        fg.setAttribute('position', new THREE.Float32BufferAttribute([
+          va.x, va.y, va.z,
+          vb.x, vb.y, vb.z,
+          vc.x, vc.y, vc.z,
+        ], 3));
+        fg.setIndex([0, 1, 2]);
+
+        const selected = this.selectedFaces.has(i);
+        const fm = new THREE.Mesh(fg, new THREE.MeshBasicMaterial({
+          color: selected ? FACE_SEL : FACE_COLOR,
+          transparent: true,
+          opacity: selected ? FACE_SEL_OPACITY : FACE_OPACITY,
+          side: THREE.DoubleSide,
+          depthTest: false,
+        }));
+        fm.renderOrder = 997;
+        fm.userData.faceIndex = i;
+        this._faceGroup2.add(fm);
+        this._faceMeshes.push(fm);
+      }
     }
   }
 
@@ -154,12 +204,13 @@ export class MeshEditor {
     [this.vertGroup, this.edgeGroup, this.faceGroup].forEach(g => {
       while (g.children.length) g.remove(g.children[0]);
     });
-    this._vertPoints = null;
+    this._vertMeshes = [];
     this._edgeLines  = null;
-    this._faceMesh   = null;
+    this._edgeKeys   = [];
+    this._faceMeshes = [];
   }
 
-  // ── Raycasting helpers ──
+  // ── NDC helper ────────────────────────────────────────────────────────────
   _getNDC(e) {
     return new THREE.Vector2(
       ( e.clientX / window.innerWidth)  * 2 - 1,
@@ -167,21 +218,48 @@ export class MeshEditor {
     );
   }
 
+  // ── Picking ───────────────────────────────────────────────────────────────
   _pickVertex(e) {
     this._raycaster.setFromCamera(this._getNDC(e), this.camera);
-    if (!this._vertPoints) return -1;
-    const hits = this._raycaster.intersectObject(this._vertPoints);
-    return hits.length > 0 ? hits[0].index : -1;
+    const hits = this._raycaster.intersectObjects(this._vertMeshes);
+    if (hits.length === 0) return -1;
+    return hits[0].object.userData.vertIndex;
+  }
+
+  _pickEdge(e) {
+    // Find the nearest edge line pair by screen-space distance to the click
+    this._raycaster.setFromCamera(this._getNDC(e), this.camera);
+    const ray = this._raycaster.ray;
+
+    if (!this._edgeLines) return -1;
+    const posAttr = this._edgeLines.geometry.attributes.position;
+
+    let bestDist = Infinity;
+    let bestIdx  = -1;
+    const PICK_THRESHOLD = 0.08; // world-space line proximity
+
+    for (let i = 0; i < this._edgeKeys.length; i++) {
+      const va = new THREE.Vector3().fromBufferAttribute(posAttr, i * 2);
+      const vb = new THREE.Vector3().fromBufferAttribute(posAttr, i * 2 + 1);
+
+      // Closest point on ray to line segment
+      const d = ray.distanceSqToSegment(va, vb);
+      if (d < PICK_THRESHOLD * PICK_THRESHOLD && d < bestDist) {
+        bestDist = d;
+        bestIdx  = i;
+      }
+    }
+    return bestIdx;
   }
 
   _pickFace(e) {
     this._raycaster.setFromCamera(this._getNDC(e), this.camera);
-    if (!this._faceMesh) return -1;
-    const hits = this._raycaster.intersectObject(this._faceMesh);
-    return hits.length > 0 ? hits[0].faceIndex : -1;
+    const hits = this._raycaster.intersectObjects(this._faceMeshes);
+    if (hits.length === 0) return -1;
+    return hits[0].object.userData.faceIndex;
   }
 
-  // ── Pointer events ──
+  // ── Pointer events ────────────────────────────────────────────────────────
   _onPointerDown(e) {
     if (e.button !== 0) return;
     this._dragStart = { x: e.clientX, y: e.clientY };
@@ -196,9 +274,9 @@ export class MeshEditor {
           this.selectedVerts.clear();
           this.selectedVerts.add(vi);
         }
-        this._updateVertColors();
-        // Set drag plane perpendicular to camera through the vertex
-        const pos = this.targetMesh.geometry.attributes.position;
+        this._buildHelpers();
+
+        const pos   = this.targetMesh.geometry.attributes.position;
         const vWorld = new THREE.Vector3().fromBufferAttribute(pos, vi)
           .applyMatrix4(this.targetMesh.matrixWorld);
         this._dragPlane.setFromNormalAndCoplanarPoint(
@@ -207,7 +285,38 @@ export class MeshEditor {
         this._dragging = true;
         this.orbit.enabled = false;
       } else {
-        if (!e.shiftKey) { this.selectedVerts.clear(); this._updateVertColors(); }
+        if (!e.shiftKey) { this.selectedVerts.clear(); this._buildHelpers(); }
+      }
+    }
+
+    if (this.subMode === 'edge') {
+      const ei = this._pickEdge(e);
+      if (ei >= 0) {
+        const key = this._edgeKeys[ei];
+        if (e.shiftKey) {
+          this.selectedEdges.has(key) ? this.selectedEdges.delete(key) : this.selectedEdges.add(key);
+        } else {
+          this.selectedEdges.clear();
+          this.selectedEdges.add(key);
+        }
+        this._buildHelpers();
+
+        // Drag plane: midpoint of edge, camera-facing
+        const posAttr = this._edgeLines
+          ? this._edgeLines.geometry.attributes.position
+          : null;
+        if (posAttr) {
+          const va = new THREE.Vector3().fromBufferAttribute(posAttr, ei * 2);
+          const vb = new THREE.Vector3().fromBufferAttribute(posAttr, ei * 2 + 1);
+          const mid = va.clone().add(vb).multiplyScalar(0.5);
+          this._dragPlane.setFromNormalAndCoplanarPoint(
+            this.camera.getWorldDirection(new THREE.Vector3()).negate(), mid
+          );
+          this._dragging = true;
+          this.orbit.enabled = false;
+        }
+      } else {
+        if (!e.shiftKey) { this.selectedEdges.clear(); this._buildHelpers(); }
       }
     }
 
@@ -220,27 +329,26 @@ export class MeshEditor {
           this.selectedFaces.clear();
           this.selectedFaces.add(fi);
         }
-        // Collect verts of selected faces for drag
         this._collectFaceVerts();
-        this._dragging = true;
-        this.orbit.enabled = false;
-        // drag plane: face normal
-        const face = this._faceMesh.geometry.index
-          ? null : null; // use camera normal instead
-        const hit = this._raycaster.intersectObject(this._faceMesh);
-        if (hit.length) {
+        this._buildHelpers();
+
+        // Drag plane: use hit point
+        this._raycaster.setFromCamera(this._getNDC(e), this.camera);
+        const hits = this._raycaster.intersectObjects(this._faceMeshes);
+        if (hits.length) {
           this._dragPlane.setFromNormalAndCoplanarPoint(
-            this.camera.getWorldDirection(new THREE.Vector3()).negate(), hit[0].point
+            this.camera.getWorldDirection(new THREE.Vector3()).negate(), hits[0].point
           );
         }
+        this._dragging = true;
+        this.orbit.enabled = false;
       } else {
-        if (!e.shiftKey) { this.selectedFaces.clear(); }
+        if (!e.shiftKey) { this.selectedFaces.clear(); this._buildHelpers(); }
       }
     }
   }
 
   _collectFaceVerts() {
-    // For face drag: gather all vertex indices belonging to selected faces
     this._faceVertIndices = new Set();
     const index = this.targetMesh.geometry.index;
     if (!index) return;
@@ -251,6 +359,15 @@ export class MeshEditor {
     });
   }
 
+  _collectEdgeVerts() {
+    this._edgeVertIndices = new Set();
+    this.selectedEdges.forEach(key => {
+      const [a, b] = key.split('_').map(Number);
+      this._edgeVertIndices.add(a);
+      this._edgeVertIndices.add(b);
+    });
+  }
+
   _onPointerMove(e) {
     if (!this._dragging) return;
 
@@ -258,26 +375,28 @@ export class MeshEditor {
     const dy = e.clientY - this._dragStart.y;
     if (Math.sqrt(dx*dx + dy*dy) < 2) return;
 
-    // Find world position on drag plane
     this._raycaster.setFromCamera(this._getNDC(e), this.camera);
     const pt = new THREE.Vector3();
-    this._raycaster.ray.intersectPlane(this._dragPlane, pt);
-    if (!pt) return;
+    if (!this._raycaster.ray.intersectPlane(this._dragPlane, pt)) return;
 
-    // Compute delta from last frame
     if (!this._lastDragPt) { this._lastDragPt = pt.clone(); return; }
     const delta = pt.clone().sub(this._lastDragPt);
     this._lastDragPt = pt.clone();
 
-    // Convert world delta to local space of mesh
     const invMat = this.targetMesh.matrixWorld.clone().invert();
     const localDelta = delta.clone().transformDirection(invMat);
 
     const pos = this.targetMesh.geometry.attributes.position;
 
-    const vertsToMove = this.subMode === 'vertex'
-      ? this.selectedVerts
-      : this._faceVertIndices || new Set();
+    let vertsToMove;
+    if (this.subMode === 'vertex') {
+      vertsToMove = this.selectedVerts;
+    } else if (this.subMode === 'edge') {
+      this._collectEdgeVerts();
+      vertsToMove = this._edgeVertIndices;
+    } else {
+      vertsToMove = this._faceVertIndices || new Set();
+    }
 
     vertsToMove.forEach(vi => {
       pos.setX(vi, pos.getX(vi) + localDelta.x);
@@ -287,10 +406,7 @@ export class MeshEditor {
 
     pos.needsUpdate = true;
     this.targetMesh.geometry.computeVertexNormals();
-
-    // Rebuild helpers to reflect new positions
     this._buildHelpers();
-    this._updateVertColors();
   }
 
   _onPointerUp(e) {
@@ -298,27 +414,5 @@ export class MeshEditor {
     this._dragging    = false;
     this._lastDragPt  = null;
     this.orbit.enabled = true;
-  }
-
-  _updateVertColors() {
-    if (!this._vertPoints) return;
-    const pos   = this.targetMesh.geometry.attributes.position;
-    const mat   = this.targetMesh.matrixWorld;
-    const count = pos.count;
-    const colors = [];
-
-    for (let i = 0; i < count; i++) {
-      if (this.selectedVerts.has(i)) {
-        colors.push(1, 0.2, 0); // selected: orange-red
-      } else {
-        colors.push(1, 0.67, 0); // default: yellow-orange
-      }
-    }
-
-    this._vertPoints.geometry.setAttribute(
-      'color', new THREE.Float32BufferAttribute(colors, 3)
-    );
-    this._vertPoints.material.vertexColors = true;
-    this._vertPoints.material.needsUpdate  = true;
   }
 }
