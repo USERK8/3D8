@@ -7,6 +7,7 @@ import { createControls, handleResize } from './controls.js';
 import { ObjectManager } from './objects.js';
 import { exportModel } from './export.js';
 import { setupImporter } from './import.js';
+import { MeshEditor } from './mesh-edit.js';
 
 const canvas = document.getElementById('viewport');
 const scene  = createScene();
@@ -20,6 +21,7 @@ createGrid(scene);
 const orbit     = createControls(camera, canvas);
 const objManager = new ObjectManager(scene);
 const clock     = new THREE.Clock();
+const meshEditor = new MeshEditor(scene, camera, renderer, orbit);
 
 const undoStack      = [];
 let   dragStartState = null;
@@ -74,6 +76,75 @@ document.getElementById('btn-select').onclick = () => setTool('select');
 document.getElementById('btn-move').onclick   = () => setTool('translate');
 document.getElementById('btn-rotate').onclick = () => setTool('rotate');
 document.getElementById('btn-scale').onclick  = () => setTool('scale');
+
+// ════════════════════════════════════════════════
+// MODE SWITCHING  (Object ↔ Mesh)
+// ════════════════════════════════════════════════
+let currentMode = 'object'; // 'object' | 'mesh'
+
+const toolbar      = document.getElementById('toolbar');
+const meshToolbar  = document.getElementById('mesh-toolbar');
+const modeBtnObj   = document.getElementById('mode-object');
+const modeBtnMesh  = document.getElementById('mode-mesh');
+
+function enterObjectMode() {
+  currentMode = 'object';
+  modeBtnObj.classList.add('active');
+  modeBtnMesh.classList.remove('active');
+  toolbar.style.display = '';
+  meshToolbar.style.display = 'none';
+  meshEditor.exit();
+  updateUI();
+}
+
+function enterMeshMode() {
+  const sel = objManager.getSelected();
+  if (!sel) {
+    // Flash a toast — need a selected object first
+    const el = document.createElement('div');
+    el.className = 'export-toast';
+    el.style.borderColor = 'rgba(255,50,50,0.4)';
+    el.style.color = '#f88';
+    el.textContent = '✗ Select an object first';
+    document.body.appendChild(el);
+    setTimeout(() => el.remove(), 2500);
+    return;
+  }
+  currentMode = 'mesh';
+  modeBtnMesh.classList.add('active');
+  modeBtnObj.classList.remove('active');
+  toolbar.style.display = 'none';
+  meshToolbar.style.display = 'flex';
+  transformControl.detach();
+  meshEditor.enter(sel);
+  updateUI();
+}
+
+modeBtnObj.addEventListener('click', enterObjectMode);
+modeBtnMesh.addEventListener('click', enterMeshMode);
+
+// Tab key to toggle modes (like Blender)
+window.addEventListener('keydown', e => {
+  if (e.key === 'Tab') {
+    e.preventDefault();
+    currentMode === 'object' ? enterMeshMode() : enterObjectMode();
+  }
+});
+
+// Mesh sub-mode buttons
+const msubVert = document.getElementById('msub-vert');
+const msubEdge = document.getElementById('msub-edge');
+const msubFace = document.getElementById('msub-face');
+
+function setMeshSubMode(mode) {
+  [msubVert, msubEdge, msubFace].forEach(b => b.classList.remove('active'));
+  ({ vertex: msubVert, edge: msubEdge, face: msubFace })[mode].classList.add('active');
+  meshEditor.setSubMode(mode);
+}
+
+msubVert.addEventListener('click', () => setMeshSubMode('vertex'));
+msubEdge.addEventListener('click', () => setMeshSubMode('edge'));
+msubFace.addEventListener('click', () => setMeshSubMode('face'));
 
 // ════════════════════════════════════════════════════
 // SELECTION — LMB click, Shift+LMB multi-select,
@@ -172,6 +243,7 @@ function boxSelectObjects(x0, y0, x1, y1) {
 renderer.domElement.addEventListener('pointerdown', (e) => {
   if (e.button !== 0) return;
   if (transformControl.dragging) return;
+  if (currentMode === 'mesh') return; // mesh editor handles its own pointerdown
 
   lmbDown   = true;
   lmbStartX = e.clientX;
@@ -215,6 +287,7 @@ window.addEventListener('pointerup', (e) => {
   if (isDraggingBox) {
     isDraggingBox = false;
     boxEl.style.display = 'none';
+    if (currentMode === 'mesh') return;
 
     const found = boxSelectObjects(lmbStartX, lmbStartY, e.clientX, e.clientY);
 
@@ -242,6 +315,7 @@ window.addEventListener('pointerup', (e) => {
   }
 
   // ── Single click ──
+  if (currentMode === 'mesh') return; // mesh editor handles its own clicks
   const hit = raycastAt(e.clientX, e.clientY);
 
   if (e.shiftKey) {
@@ -552,7 +626,9 @@ function startInlineRename(obj) {
 function updateUI() {
   objCountEl.textContent = `Objects: ${objManager.getObjectCount()}`;
   const sel = objManager.getSelected();
-  selInfoEl.textContent  = sel ? `Selected: ${sel.userData.name}` : 'Nothing selected';
+  selInfoEl.textContent  = currentMode === 'mesh'
+    ? `Mesh Edit: ${sel ? sel.userData.name : '—'}`
+    : sel ? `Selected: ${sel.userData.name}` : 'Nothing selected';
 
   hListEl.innerHTML = '';
   objManager.getObjects().forEach(obj => {
