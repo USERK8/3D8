@@ -1,4 +1,27 @@
-* { margin: 0; padding: 0; box-sizing: border-box; }
+/* --- MODE SWITCHER --- */
+#mode-switcher {
+  position: fixed; top: 12px; left: 12px;
+  display: flex; gap: 4px; z-index: 300;
+}
+.mode-btn {
+  background: rgba(20, 20, 30, 0.6);
+  backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(255,255,255,0.1);
+  color: #888; border-radius: 6px;
+  padding: 7px 14px; font-size: 12px;
+  font-family: 'Courier New', monospace;
+  cursor: pointer; transition: all 0.15s;
+}
+.mode-btn:hover { background: rgba(255,255,255,0.1); color: #fff; }
+.mode-btn.active { background: #ff0033; color: #fff; border-color: #ff0033; }
+
+/* Mesh sub-mode toolbar sits below mode switcher */
+#mesh-toolbar {
+  position: fixed; top: 48px; left: 12px;
+  display: flex; gap: 4px; z-index: 300;
+}
+
+
 
 body { 
   /* Dynamic midnight blue to violet gradient */
