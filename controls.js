@@ -8,20 +8,70 @@ export function createControls(camera, canvas) {
   controls.dampingFactor      = 0.05;
   controls.screenSpacePanning = true;
   controls.enableZoom         = false;
+  controls.enableRotate       = false; // we handle MMB rotate manually
+  controls.enablePan          = false; // we handle Shift+MMB pan manually
+  controls.mouseButtons       = { LEFT: -1, MIDDLE: -1, RIGHT: -1 };
 
-  // Move rotate from LMB to MMB, free LMB for selection
-  // Shift+MMB = pan (OrbitControls does this natively when shiftKey is held)
-  controls.mouseButtons = {
-    LEFT:   -1,
-    MIDDLE: THREE.MOUSE.ROTATE,
-    RIGHT:  -1,
-  };
+  let isMMBDown   = false;
+  let isShiftDown = false;
+  let lastX = 0, lastY = 0;
 
-  // No vertical rotation limit
-  controls.minPolarAngle = 0;
-  controls.maxPolarAngle = Math.PI;
+  window.addEventListener('keydown', e => { if (e.key === 'Shift') isShiftDown = true;  });
+  window.addEventListener('keyup',   e => { if (e.key === 'Shift') isShiftDown = false; });
 
-  // ── Scroll → Zoom (no limits) ──
+  canvas.addEventListener('mousedown', e => {
+    if (e.button !== 1) return;
+    e.preventDefault();
+    isMMBDown = true;
+    lastX = e.clientX;
+    lastY = e.clientY;
+  });
+
+  window.addEventListener('mouseup', e => {
+    if (e.button === 1) isMMBDown = false;
+  });
+
+  window.addEventListener('mousemove', e => {
+    if (!isMMBDown) return;
+
+    const dx = e.clientX - lastX;
+    const dy = e.clientY - lastY;
+    lastX = e.clientX;
+    lastY = e.clientY;
+
+    if (isShiftDown) {
+      // Shift+MMB → Pan
+      const distance = camera.position.distanceTo(controls.target);
+      const panSpeed  = distance * 0.001;
+      const right = new THREE.Vector3().setFromMatrixColumn(camera.matrix, 0);
+      const up    = new THREE.Vector3().setFromMatrixColumn(camera.matrix, 1);
+      controls.target.addScaledVector(right, -dx * panSpeed);
+      controls.target.addScaledVector(up,     dy * panSpeed);
+      camera.position.addScaledVector(right, -dx * panSpeed);
+      camera.position.addScaledVector(up,     dy * panSpeed);
+    } else {
+      // MMB → Rotate (quaternion, no pole clamp at all)
+      const SPEED  = 0.005;
+      const offset = camera.position.clone().sub(controls.target);
+
+      // Horizontal drag → yaw around world Y
+      const yaw = new THREE.Quaternion().setFromAxisAngle(
+        new THREE.Vector3(0, 1, 0), -dx * SPEED
+      );
+      // Vertical drag → pitch around camera's local X (right vector)
+      const right = new THREE.Vector3().setFromMatrixColumn(camera.matrix, 0).normalize();
+      const pitch = new THREE.Quaternion().setFromAxisAngle(right, -dy * SPEED);
+
+      offset.applyQuaternion(yaw).applyQuaternion(pitch);
+      camera.position.copy(controls.target).add(offset);
+      camera.lookAt(controls.target);
+      camera.updateMatrixWorld();
+    }
+
+    controls.update();
+  });
+
+  // Scroll → Zoom (no limits)
   const ZOOM_FACTOR = 1.1;
   canvas.addEventListener('wheel', (e) => {
     e.preventDefault();
