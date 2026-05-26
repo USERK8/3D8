@@ -9,16 +9,10 @@ export function createControls(camera, canvas) {
   controls.screenSpacePanning = true;
   controls.enableZoom         = false;
 
-  // MMB = rotate (what LMB normally does in OrbitControls)
-  // Shift+MMB = pan   (what MMB/RMB normally does)
-  // LMB = nothing (freed up for selection in main.js)
   controls.mouseButtons = {
     MIDDLE: THREE.MOUSE.ROTATE,
   };
 
-  // Shift+MMB → pan: OrbitControls handles this natively when
-  // we set the pan button to MIDDLE and check e.shiftKey.
-  // Easiest way: swap MIDDLE to PAN when Shift is held.
   canvas.addEventListener('mousedown', e => {
     if (e.button !== 1) return;
     if (e.shiftKey) {
@@ -27,6 +21,9 @@ export function createControls(camera, canvas) {
       controls.mouseButtons = { MIDDLE: THREE.MOUSE.ROTATE };
     }
   });
+
+  // Invert rotation direction to feel natural (like Blender)
+  controls.rotateSpeed = -1;
 
   // No polar angle limits — full rotation
   controls.minPolarAngle = 0;
