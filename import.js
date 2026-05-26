@@ -1,16 +1,21 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 
+// Blender exports glTF with Z-up convention but three.js is Y-up.
+// The glTF spec says loaders should handle this, but baked world matrices
+// from Blender files often still need a -90° X rotation applied.
+const BLENDER_FIX = new THREE.Matrix4().makeRotationX(-Math.PI / 2);
+
 function showToast(msg, isError = false) {
   document.querySelectorAll('.export-toast').forEach(e => e.remove());
   const el = document.createElement('div');
   el.className = 'export-toast';
-  if (isError) { 
-    el.style.borderColor = 'rgba(255,50,50,0.4)'; 
-    el.style.color = '#f88'; 
-  } else { 
-    el.style.borderColor = 'rgba(100,255,150,0.4)'; 
-    el.style.color = '#8f9'; 
+  if (isError) {
+    el.style.borderColor = 'rgba(255,50,50,0.4)';
+    el.style.color = '#f88';
+  } else {
+    el.style.borderColor = 'rgba(100,255,150,0.4)';
+    el.style.color = '#8f9';
   }
   el.textContent = msg;
   document.body.appendChild(el);
@@ -37,27 +42,32 @@ export function setupImporter(objManager, updateUICallback) {
       url,
       (gltf) => {
         let importedCount = 0;
-        
+
         // Ensure all loaded objects calculate their absolute positions
         gltf.scene.updateMatrixWorld(true);
-        
+
         const meshesToImport = [];
-        
+
         // Hunt down every individual mesh inside the GLTF file
         gltf.scene.traverse((node) => {
           if (node.isMesh) {
             const mesh = node.clone();
-            
+
             // Bake the world matrix into the geometry so we can safely flatten the hierarchy
             mesh.geometry = mesh.geometry.clone();
             mesh.geometry.applyMatrix4(node.matrixWorld);
-            
-            // Reset local transforms since the geometry now inherently holds the world position
+
+            // ── Fix Blender Z-up → three.js Y-up ──
+            // After baking world matrix, rotate geometry -90° around X so
+            // what was "up" in Blender (Z) becomes "up" in three.js (Y).
+            mesh.geometry.applyMatrix4(BLENDER_FIX);
+
+            // Reset local transforms since the geometry now holds the final position
             mesh.position.set(0, 0, 0);
             mesh.rotation.set(0, 0, 0);
             mesh.scale.set(1, 1, 1);
             mesh.updateMatrix();
-            
+
             meshesToImport.push(mesh);
           }
         });
@@ -70,13 +80,13 @@ export function setupImporter(objManager, updateUICallback) {
 
         updateUICallback();
         showToast(`✓ Imported ${importedCount} meshes from ${file.name}`);
-        
+
         URL.revokeObjectURL(url);
-        fileInput.value = ''; // Reset input so you can import the same file twice
+        fileInput.value = ''; // Reset so the same file can be re-imported
       },
       undefined,
       (error) => {
-        console.error("GLTF Import Error:", error);
+        console.error('GLTF Import Error:', error);
         showToast(`✗ Failed to import ${file.name}`, true);
         URL.revokeObjectURL(url);
         fileInput.value = '';
