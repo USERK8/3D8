@@ -1,20 +1,15 @@
 import * as THREE from 'three';
 import { TransformControls } from 'three/addons/controls/TransformControls.js';
 
-// ── Colours ───────────────────────────────────────────────────────────────────
-const VERT_IDLE        = 0xaaaaaa;
-const VERT_SEL         = 0xcc88ff;   // glass-purple
-const EDGE_IDLE        = 0x556677;
-const EDGE_SEL         = 0xcc88ff;
-const FACE_IDLE_OP     = 0.0;        // invisible when not selected
-const FACE_SEL_COLOR   = 0xcc88ff;
-const FACE_SEL_OP      = 0.38;
-const VERT_RADIUS      = 0.032;
-
-// How far (world units) the soft-falloff reaches beyond selected verts
-const FALLOFF_RADIUS   = 1.2;
-// Scale gizmo movement down so dragging isn't crazy fast
-const DRAG_SCALE       = 0.35;
+const VERT_IDLE      = 0x888888;
+const VERT_SEL       = 0xcc88ff;
+const EDGE_IDLE      = 0x445566;
+const EDGE_SEL       = 0xcc88ff;
+const FACE_SEL_COLOR = 0xcc88ff;
+const FACE_SEL_OP    = 0.38;
+const VERT_RADIUS    = 0.032;
+const DRAG_SCALE     = 0.38;
+const FALLOFF_RADIUS = 1.4;
 
 export class MeshEditor {
   constructor(scene, camera, renderer, orbitControls) {
@@ -30,13 +25,13 @@ export class MeshEditor {
     scene.add(this.vertGroup, this.edgeGroup, this.faceGroup);
 
     this.subMode = 'vertex';
-
     this.selectedVerts = new Set();
     this.selectedEdges = new Set();
     this.selectedFaces = new Set();
 
     this._undoStack   = [];
     this._pendingSnap = null;
+    this._applying    = false; // re-entrance guard
 
     this._raycaster  = new THREE.Raycaster();
     this._vertMeshes = [];
@@ -44,8 +39,10 @@ export class MeshEditor {
     this._faceMeshes = [];
     this._edgeLines  = null;
 
+    // Gizmo lives at the centroid; we track its displacement manually
     this._gizmoProxy   = new THREE.Object3D();
     this._prevGizmoPos = new THREE.Vector3();
+    this._gizmoDirty   = false;
     scene.add(this._gizmoProxy);
 
     this._gizmo = new TransformControls(camera, renderer.domElement);
@@ -56,13 +53,17 @@ export class MeshEditor {
     this._gizmo.addEventListener('mouseDown', () => {
       this.orbit.enabled = false;
       this._snapPositions();
+      this._prevGizmoPos.copy(this._gizmoProxy.position);
     });
     this._gizmo.addEventListener('mouseUp', () => {
       this.orbit.enabled = true;
       this._pushUndo();
+      // Re-anchor gizmo at real centroid after drag
+      const c = this._getSelectionCentroid();
+      if (c) { this._gizmoProxy.position.copy(c); this._prevGizmoPos.copy(c); }
     });
     this._gizmo.addEventListener('change', () => {
-      if (!this._gizmo.dragging) return;
+      if (!this._gizmo.dragging || this._applying) return;
       this._applyGizmoDelta();
     });
 
@@ -97,9 +98,10 @@ export class MeshEditor {
 
   setSubMode(mode) {
     this.subMode = mode;
-    this.selectedVerts.clear();
-    this.selectedEdges.clear();
-    this.selectedFaces.clear();
+    // Clear ONLY the selections irrelevant to new mode
+    if (mode !== 'vertex') this.selectedVerts.clear();
+    if (mode !== 'edge')   this.selectedEdges.clear();
+    if (mode !== 'face')   this.selectedFaces.clear();
     this._buildHelpers();
     this._hideGizmo();
   }
@@ -120,8 +122,7 @@ export class MeshEditor {
   _snapPositions() {
     const pos = this.targetMesh.geometry.attributes.position;
     this._pendingSnap = Array.from({ length: pos.count }, (_, i) =>
-      new THREE.Vector3().fromBufferAttribute(pos, i)
-    );
+      new THREE.Vector3().fromBufferAttribute(pos, i));
   }
   _pushUndo() {
     if (this._pendingSnap) { this._undoStack.push(this._pendingSnap); this._pendingSnap = null; }
@@ -170,34 +171,33 @@ export class MeshEditor {
     return out;
   }
 
-  // ── Movement with smooth falloff ───────────────────────────────────────────
+  // ── Movement ───────────────────────────────────────────────────────────────
   _applyGizmoDelta() {
-    // Raw world-space delta from gizmo proxy
+    this._applying = true;
+
     const rawDelta = this._gizmoProxy.position.clone().sub(this._prevGizmoPos);
-    if (rawDelta.lengthSq() < 1e-12) return;
+    if (rawDelta.lengthSq() < 1e-14) { this._applying = false; return; }
 
-    // Dampen speed
-    const delta = rawDelta.multiplyScalar(DRAG_SCALE);
+    // Scale down speed
+    const delta = rawDelta.clone().multiplyScalar(DRAG_SCALE);
 
-    // Snap proxy back — we apply our own scaled delta and reposition the gizmo ourselves
-    this._gizmoProxy.position.copy(this._prevGizmoPos).add(delta);
+    // Immediately push proxy back by the unscaled amount so next frame
+    // delta is fresh — this breaks the feedback loop
+    this._prevGizmoPos.copy(this._gizmoProxy.position);
 
-    const invMat     = this.targetMesh.matrixWorld.clone().invert();
-    const localDelta = delta.clone().transformDirection(invMat);
     const pos        = this.targetMesh.geometry.attributes.position;
     const mat        = this.targetMesh.matrixWorld;
+    const invMat     = mat.clone().invert();
+    const localDelta = delta.clone().transformDirection(invMat);
 
     const selectedVI = this._getSelectedVertIndices();
 
-    // Build world-space positions of selected verts for falloff computation
+    // Cache world positions of selected verts BEFORE moving anything
     const selWorldPos = [];
-    selectedVI.forEach(vi => {
-      selWorldPos.push(new THREE.Vector3().fromBufferAttribute(pos, vi).applyMatrix4(mat));
-    });
+    selectedVI.forEach(vi =>
+      selWorldPos.push(new THREE.Vector3().fromBufferAttribute(pos, vi).applyMatrix4(mat))
+    );
 
-    // For every vertex: compute weight
-    //   selected  → weight 1.0
-    //   unselected → smooth falloff based on distance to nearest selected vert
     for (let i = 0; i < pos.count; i++) {
       let weight;
       if (selectedVI.has(i)) {
@@ -206,8 +206,7 @@ export class MeshEditor {
         const wv = new THREE.Vector3().fromBufferAttribute(pos, i).applyMatrix4(mat);
         let minDist = Infinity;
         for (const sv of selWorldPos) { const d = wv.distanceTo(sv); if (d < minDist) minDist = d; }
-        if (minDist >= FALLOFF_RADIUS) continue; // no influence
-        // Smooth-step falloff: 1 at dist=0, 0 at dist=FALLOFF_RADIUS
+        if (minDist >= FALLOFF_RADIUS) continue;
         const t = minDist / FALLOFF_RADIUS;
         weight = 1 - t * t * (3 - 2 * t); // smoothstep
         if (weight < 0.001) continue;
@@ -219,98 +218,144 @@ export class MeshEditor {
 
     pos.needsUpdate = true;
     this.targetMesh.geometry.computeVertexNormals();
-    this._buildHelpers();
 
-    // Reposition gizmo to new centroid so it follows the selection
-    this._prevGizmoPos.copy(this._gizmoProxy.position);
-    const newCentroid = this._getSelectionCentroid();
-    if (newCentroid) {
-      this._gizmoProxy.position.copy(newCentroid);
-      this._prevGizmoPos.copy(newCentroid);
-    }
+    // Rebuild helpers WITHOUT touching gizmo position (avoid feedback)
+    this._buildHelpersOnly();
+
+    this._applying = false;
   }
 
   // ── Build helpers ──────────────────────────────────────────────────────────
+  // Full rebuild including gizmo reposition
   _buildHelpers() {
+    this._buildHelpersOnly();
+  }
+
+  // Rebuild geometry helpers only — does NOT reposition gizmo (safe during drag)
+  _buildHelpersOnly() {
     this._clearHelpers();
     if (!this.targetMesh) return;
 
-    const geo = this.targetMesh.geometry;
-    const pos = geo.attributes.position;
-    const mat = this.targetMesh.matrixWorld;
+    const geo   = this.targetMesh.geometry;
+    const pos   = geo.attributes.position;
+    const mat   = this.targetMesh.matrixWorld;
     const index = geo.index;
+    const mode  = this.subMode;
 
-    // ── Vertices ──
+    // ── Vertices (always shown in vertex mode) ──
     this._vertMeshes = [];
-    const sphereGeo  = new THREE.SphereGeometry(VERT_RADIUS, 8, 6);
-    for (let i = 0; i < pos.count; i++) {
-      const wv  = new THREE.Vector3().fromBufferAttribute(pos, i).applyMatrix4(mat);
-      const sel = this.selectedVerts.has(i);
-      const m   = new THREE.Mesh(sphereGeo, new THREE.MeshBasicMaterial({
-        color:       sel ? VERT_SEL : VERT_IDLE,
-        depthTest:   false,
-        transparent: true,
-        opacity:     sel ? 0.92 : 0.55,
-      }));
-      m.position.copy(wv);
-      m.renderOrder        = 999;
-      m.userData.vertIndex = i;
-      this.vertGroup.add(m);
-      this._vertMeshes.push(m);
+    if (mode === 'vertex') {
+      const sphereGeo = new THREE.SphereGeometry(VERT_RADIUS, 8, 6);
+      for (let i = 0; i < pos.count; i++) {
+        const wv  = new THREE.Vector3().fromBufferAttribute(pos, i).applyMatrix4(mat);
+        const sel = this.selectedVerts.has(i);
+        const m   = new THREE.Mesh(sphereGeo, new THREE.MeshBasicMaterial({
+          color: sel ? VERT_SEL : VERT_IDLE,
+          depthTest: false, transparent: true,
+          opacity: sel ? 0.95 : 0.45,
+        }));
+        m.position.copy(wv);
+        m.renderOrder        = 999;
+        m.userData.vertIndex = i;
+        this.vertGroup.add(m);
+        this._vertMeshes.push(m);
+      }
     }
 
-    // ── Edges — deduplicated, no internal diagonals ──
-    const edgeMap = new Map();
-    const addE = (a, b) => {
+    // ── Edges ──
+    // Build edge map with adjacency to detect quads (diagonals)
+    const edgeMap = new Map(); // key → {count, a, b, faces:[]}
+    const addE = (a, b, fi) => {
       const key = a < b ? `${a}_${b}` : `${b}_${a}`;
-      if (!edgeMap.has(key)) edgeMap.set(key, { count: 0, a, b });
-      edgeMap.get(key).count++;
+      if (!edgeMap.has(key)) edgeMap.set(key, { count: 0, a, b, faces: [] });
+      const e = edgeMap.get(key);
+      e.count++;
+      e.faces.push(fi);
     };
     if (index) {
       for (let i = 0; i < index.count; i += 3) {
+        const fi = Math.floor(i / 3);
         const a = index.getX(i), b = index.getX(i+1), c = index.getX(i+2);
-        addE(a,b); addE(b,c); addE(c,a);
+        addE(a, b, fi); addE(b, c, fi); addE(c, a, fi);
       }
     } else {
-      for (let i = 0; i < pos.count; i += 3) { addE(i,i+1); addE(i+1,i+2); addE(i+2,i); }
+      for (let i = 0; i < pos.count; i += 3) {
+        const fi = Math.floor(i / 3);
+        addE(i, i+1, fi); addE(i+1, i+2, fi); addE(i+2, i, fi);
+      }
     }
+
+    // Detect quads: two triangles sharing an edge where the 4 verts are coplanar
+    // → the shared edge is a diagonal, skip it
+    const isDiagonal = (e) => {
+      if (e.count !== 2 || !index) return false;
+      const [f0, f1] = e.faces;
+      // Gather all 4 unique verts of the quad
+      const getTriVerts = (fi) => [
+        index.getX(fi*3), index.getX(fi*3+1), index.getX(fi*3+2),
+      ];
+      const t0 = getTriVerts(f0), t1 = getTriVerts(f1);
+      const all = [...new Set([...t0, ...t1])];
+      if (all.length !== 4) return false; // not a quad
+      // Check coplanarity: compute normal of first tri, check 4th vert against it
+      const vp = (i) => new THREE.Vector3().fromBufferAttribute(pos, i);
+      const va = vp(t0[0]), vb = vp(t0[1]), vc = vp(t0[2]);
+      const n  = new THREE.Vector3().crossVectors(
+        vb.clone().sub(va), vc.clone().sub(va)
+      ).normalize();
+      const vd = vp(all.find(v => !t0.includes(v)));
+      // If the 4th vert is on the same plane (within tolerance), it's a diagonal
+      return Math.abs(n.dot(vd.clone().sub(va))) < 0.001;
+    };
 
     this._edgeKeys = [];
     const edgeVerts = [], edgeColors = [];
-    edgeMap.forEach(({ count, a, b }, key) => {
-      if (count > 2) return;
-      const va = new THREE.Vector3().fromBufferAttribute(pos, a).applyMatrix4(mat);
-      const vb = new THREE.Vector3().fromBufferAttribute(pos, b).applyMatrix4(mat);
-      edgeVerts.push(va.x,va.y,va.z, vb.x,vb.y,vb.z);
-      this._edgeKeys.push(key);
-      const sel = this.selectedEdges.has(key);
-      const c   = new THREE.Color(sel ? EDGE_SEL : EDGE_IDLE);
-      edgeColors.push(c.r,c.g,c.b, c.r,c.g,c.b);
-    });
+    if (mode === 'edge' || mode === 'vertex') {
+      edgeMap.forEach((e, key) => {
+        if (isDiagonal(e)) return; // skip quad diagonals
+        const va = new THREE.Vector3().fromBufferAttribute(pos, e.a).applyMatrix4(mat);
+        const vb = new THREE.Vector3().fromBufferAttribute(pos, e.b).applyMatrix4(mat);
+        edgeVerts.push(va.x,va.y,va.z, vb.x,vb.y,vb.z);
+        this._edgeKeys.push(key);
+        const sel = this.selectedEdges.has(key);
+        const c   = new THREE.Color(sel ? EDGE_SEL : EDGE_IDLE);
+        edgeColors.push(c.r,c.g,c.b, c.r,c.g,c.b);
+      });
+    } else if (mode === 'face') {
+      // In face mode still show edges but dimmer, no selection colouring
+      edgeMap.forEach((e, key) => {
+        if (isDiagonal(e)) return;
+        const va = new THREE.Vector3().fromBufferAttribute(pos, e.a).applyMatrix4(mat);
+        const vb = new THREE.Vector3().fromBufferAttribute(pos, e.b).applyMatrix4(mat);
+        edgeVerts.push(va.x,va.y,va.z, vb.x,vb.y,vb.z);
+        this._edgeKeys.push(key);
+        const c = new THREE.Color(EDGE_IDLE);
+        edgeColors.push(c.r,c.g,c.b, c.r,c.g,c.b);
+      });
+    }
 
-    const edgeGeo = new THREE.BufferGeometry();
-    edgeGeo.setAttribute('position', new THREE.Float32BufferAttribute(edgeVerts, 3));
-    edgeGeo.setAttribute('color',    new THREE.Float32BufferAttribute(edgeColors, 3));
-    this._edgeLines = new THREE.LineSegments(edgeGeo, new THREE.LineBasicMaterial({
-      vertexColors: true, depthTest: false, transparent: true, opacity: 0.75,
-    }));
-    this._edgeLines.renderOrder = 998;
-    this.edgeGroup.add(this._edgeLines);
+    if (edgeVerts.length) {
+      const edgeGeo = new THREE.BufferGeometry();
+      edgeGeo.setAttribute('position', new THREE.Float32BufferAttribute(edgeVerts, 3));
+      edgeGeo.setAttribute('color',    new THREE.Float32BufferAttribute(edgeColors, 3));
+      this._edgeLines = new THREE.LineSegments(edgeGeo, new THREE.LineBasicMaterial({
+        vertexColors: true, depthTest: false, transparent: true, opacity: 0.7,
+      }));
+      this._edgeLines.renderOrder = 998;
+      this.edgeGroup.add(this._edgeLines);
+    }
 
-    // ── Faces ──
+    // ── Faces (only shown in face mode) ──
     this._faceMeshes = [];
-    const fg2 = new THREE.Group();
-    this.faceGroup.add(fg2);
-
-    if (index) {
-      // Thickness shell (back-side, slightly bigger)
+    if (mode === 'face' && index) {
+      // Thin back-side shell for edge-on visibility
       const shell = new THREE.Mesh(
         geo.clone().applyMatrix4(mat),
-        new THREE.MeshBasicMaterial({ color: 0x1a0a2e, side: THREE.BackSide, transparent: true, opacity: 0.15 })
+        new THREE.MeshBasicMaterial({ color: 0x1a0a2e, side: THREE.BackSide, transparent: true, opacity: 0.12 })
       );
-      shell.scale.setScalar(1.012);
+      shell.scale.setScalar(1.010);
       shell.renderOrder = 996;
-      fg2.add(shell);
+      this.faceGroup.add(shell);
 
       for (let i = 0; i < index.count / 3; i++) {
         const ai = index.getX(i*3), bi = index.getX(i*3+1), ci = index.getX(i*3+2);
@@ -321,18 +366,18 @@ export class MeshEditor {
         tfg.setAttribute('position', new THREE.Float32BufferAttribute([
           va.x,va.y,va.z, vb.x,vb.y,vb.z, vc.x,vc.y,vc.z,
         ], 3));
-        tfg.setIndex([0,1,2]);
+        tfg.setIndex([0, 1, 2]);
         const sel = this.selectedFaces.has(i);
         const fm  = new THREE.Mesh(tfg, new THREE.MeshBasicMaterial({
-          color:       sel ? FACE_SEL_COLOR : 0xffffff,
+          color: FACE_SEL_COLOR,
           transparent: true,
-          opacity:     sel ? FACE_SEL_OP : FACE_IDLE_OP,
-          side:        THREE.DoubleSide,
-          depthTest:   false,
+          opacity: sel ? FACE_SEL_OP : 0.0,
+          side: THREE.DoubleSide,
+          depthTest: false,
         }));
         fm.renderOrder        = 997;
         fm.userData.faceIndex = i;
-        fg2.add(fm);
+        this.faceGroup.add(fm);
         this._faceMeshes.push(fm);
       }
     }
@@ -365,7 +410,7 @@ export class MeshEditor {
   _pickEdge(e) {
     if (!this._edgeLines) return -1;
     this._raycaster.setFromCamera(this._getNDC(e), this.camera);
-    const ray     = this._raycaster.ray;
+    const ray = this._raycaster.ray;
     const posAttr = this._edgeLines.geometry.attributes.position;
     const THRESH  = 0.08 * 0.08;
     let bestDist  = THRESH, bestIdx = -1;
@@ -387,7 +432,7 @@ export class MeshEditor {
   // ── Input ──────────────────────────────────────────────────────────────────
   _onPointerDown(e) {
     if (e.button !== 0) return;
-    if (this._gizmo.axis !== null) return; // gizmo axis hovered — let it handle
+    if (this._gizmo.axis !== null) return;
 
     if (this.subMode === 'vertex') {
       const vi = this._pickVertex(e);
