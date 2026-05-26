@@ -12,6 +12,19 @@
 
 <canvas id="viewport"></canvas>
 
+<!-- Mode switcher top-left -->
+<div id="mode-switcher">
+  <button class="mode-btn active" id="mode-object">Object Mode</button>
+  <button class="mode-btn" id="mode-mesh">Mesh Mode</button>
+</div>
+
+<!-- Mesh sub-mode toolbar (only visible in mesh mode) -->
+<div id="mesh-toolbar" style="display:none">
+  <button class="tool-btn active" id="msub-vert">Vertex</button>
+  <button class="tool-btn" id="msub-edge">Edge</button>
+  <button class="tool-btn" id="msub-face">Face</button>
+</div>
+
 <div id="toolbar">
   <button class="tool-btn active" id="btn-select">Select</button>
   <button class="tool-btn" id="btn-move">Move (W)</button>
