@@ -24,42 +24,38 @@ export class MeshEditor {
     this.faceGroup = new THREE.Group();
     scene.add(this.vertGroup, this.edgeGroup, this.faceGroup);
 
+    // Default to vertex mode always
     this.subMode = 'vertex';
 
     this.selectedVerts = new Set();
     this.selectedEdges = new Set();
     this.selectedFaces = new Set();
 
-    // Mesh-local undo stack
-    this._undoStack = [];
+    this._undoStack    = [];
+    this._pendingSnap  = null;
 
-    this._dragging   = false;
-    this._dragStart  = null;
-    this._dragPlane  = new THREE.Plane();
-    this._lastDragPt = null;
-    this._raycaster  = new THREE.Raycaster();
-
+    this._raycaster = new THREE.Raycaster();
     this._vertMeshes = [];
     this._edgeKeys   = [];
     this._faceMeshes = [];
+    this._edgeLines  = null;
 
-    // Gizmo: a TransformControls attached to a proxy Object3D
-    this._gizmoProxy = new THREE.Object3D();
+    // Gizmo proxy — gizmo attaches to this, we read its position delta
+    this._gizmoProxy   = new THREE.Object3D();
+    this._prevGizmoPos = new THREE.Vector3();
     scene.add(this._gizmoProxy);
+
     this._gizmo = new TransformControls(camera, renderer.domElement);
     this._gizmo.setMode('translate');
-    this._gizmo.setSize(0.6);
+    this._gizmo.setSize(0.7);
     scene.add(this._gizmo);
-    this._gizmoActive = false;
 
     this._gizmo.addEventListener('mouseDown', () => {
       this.orbit.enabled = false;
-      // snapshot positions before drag
       this._snapPositions();
     });
     this._gizmo.addEventListener('mouseUp', () => {
       this.orbit.enabled = true;
-      // push undo entry after drag completes
       this._pushUndo();
     });
     this._gizmo.addEventListener('change', () => {
@@ -67,29 +63,23 @@ export class MeshEditor {
       this._applyGizmoDelta();
     });
 
-    this._prevGizmoPos = new THREE.Vector3();
-
     this._onPointerDown = this._onPointerDown.bind(this);
-    this._onPointerMove = this._onPointerMove.bind(this);
-    this._onPointerUp   = this._onPointerUp.bind(this);
     this._onKeyDown     = this._onKeyDown.bind(this);
   }
 
-  // ── Public API ────────────────────────────────────────────────────────────
+  // ── Public API ─────────────────────────────────────────────────────────────
   enter(mesh) {
     this.targetMesh = mesh;
     this.selectedVerts.clear();
     this.selectedEdges.clear();
     this.selectedFaces.clear();
     this._undoStack = [];
+    this.subMode = 'vertex'; // always start in vertex mode
     this._buildHelpers();
     this._hideGizmo();
 
-    const canvas = this.renderer.domElement;
-    canvas.addEventListener('pointerdown', this._onPointerDown);
-    window.addEventListener('pointermove', this._onPointerMove);
-    window.addEventListener('pointerup',   this._onPointerUp);
-    window.addEventListener('keydown',     this._onKeyDown);
+    this.renderer.domElement.addEventListener('pointerdown', this._onPointerDown);
+    window.addEventListener('keydown', this._onKeyDown);
   }
 
   exit() {
@@ -100,11 +90,8 @@ export class MeshEditor {
     this.selectedEdges.clear();
     this.selectedFaces.clear();
 
-    const canvas = this.renderer.domElement;
-    canvas.removeEventListener('pointerdown', this._onPointerDown);
-    window.removeEventListener('pointermove', this._onPointerMove);
-    window.removeEventListener('pointerup',   this._onPointerUp);
-    window.removeEventListener('keydown',     this._onKeyDown);
+    this.renderer.domElement.removeEventListener('pointerdown', this._onPointerDown);
+    window.removeEventListener('keydown', this._onKeyDown);
   }
 
   setSubMode(mode) {
@@ -116,14 +103,11 @@ export class MeshEditor {
     this._hideGizmo();
   }
 
-  // Returns true if this editor consumed the Ctrl+Z
   undo() {
     if (this._undoStack.length === 0) return false;
     const snap = this._undoStack.pop();
     const pos  = this.targetMesh.geometry.attributes.position;
-    for (let i = 0; i < snap.length; i++) {
-      pos.setXYZ(i, snap[i].x, snap[i].y, snap[i].z);
-    }
+    for (let i = 0; i < snap.length; i++) pos.setXYZ(i, snap[i].x, snap[i].y, snap[i].z);
     pos.needsUpdate = true;
     this.targetMesh.geometry.computeVertexNormals();
     this._buildHelpers();
@@ -131,63 +115,48 @@ export class MeshEditor {
     return true;
   }
 
-  // ── Undo helpers ──────────────────────────────────────────────────────────
+  // ── Undo helpers ───────────────────────────────────────────────────────────
   _snapPositions() {
-    const pos  = this.targetMesh.geometry.attributes.position;
-    const snap = [];
-    for (let i = 0; i < pos.count; i++) {
-      snap.push(new THREE.Vector3().fromBufferAttribute(pos, i));
-    }
-    this._pendingSnap = snap;
+    const pos = this.targetMesh.geometry.attributes.position;
+    this._pendingSnap = Array.from({ length: pos.count }, (_, i) =>
+      new THREE.Vector3().fromBufferAttribute(pos, i)
+    );
   }
 
   _pushUndo() {
-    if (this._pendingSnap) {
-      this._undoStack.push(this._pendingSnap);
-      this._pendingSnap = null;
-    }
+    if (this._pendingSnap) { this._undoStack.push(this._pendingSnap); this._pendingSnap = null; }
   }
 
-  // ── Gizmo ─────────────────────────────────────────────────────────────────
+  // ── Gizmo ──────────────────────────────────────────────────────────────────
   _showGizmo(worldPos) {
     this._gizmoProxy.position.copy(worldPos);
     this._prevGizmoPos.copy(worldPos);
     this._gizmo.attach(this._gizmoProxy);
-    this._gizmoActive = true;
   }
 
   _hideGizmo() {
     this._gizmo.detach();
-    this._gizmoActive = false;
   }
 
   _updateGizmo() {
-    const centroid = this._getSelectionCentroid();
-    if (centroid) {
-      this._showGizmo(centroid);
-    } else {
-      this._hideGizmo();
-    }
+    const c = this._getSelectionCentroid();
+    c ? this._showGizmo(c) : this._hideGizmo();
   }
 
   _getSelectionCentroid() {
     const pos = this.targetMesh?.geometry?.attributes?.position;
     const mat = this.targetMesh?.matrixWorld;
     if (!pos || !mat) return null;
-
     const verts = this._getSelectedVertIndices();
     if (verts.size === 0) return null;
-
     const c = new THREE.Vector3();
-    verts.forEach(vi => {
-      c.add(new THREE.Vector3().fromBufferAttribute(pos, vi).applyMatrix4(mat));
-    });
-    c.divideScalar(verts.size);
-    return c;
+    verts.forEach(vi => c.add(new THREE.Vector3().fromBufferAttribute(pos, vi).applyMatrix4(mat)));
+    return c.divideScalar(verts.size);
   }
 
   _getSelectedVertIndices() {
-    const out = new Set();
+    const out   = new Set();
+    const index = this.targetMesh?.geometry?.index;
     if (this.subMode === 'vertex') {
       this.selectedVerts.forEach(vi => out.add(vi));
     } else if (this.subMode === 'edge') {
@@ -195,15 +164,12 @@ export class MeshEditor {
         const [a, b] = key.split('_').map(Number);
         out.add(a); out.add(b);
       });
-    } else if (this.subMode === 'face') {
-      const index = this.targetMesh.geometry.index;
-      if (index) {
-        this.selectedFaces.forEach(fi => {
-          out.add(index.getX(fi * 3));
-          out.add(index.getX(fi * 3 + 1));
-          out.add(index.getX(fi * 3 + 2));
-        });
-      }
+    } else if (this.subMode === 'face' && index) {
+      this.selectedFaces.forEach(fi => {
+        out.add(index.getX(fi * 3));
+        out.add(index.getX(fi * 3 + 1));
+        out.add(index.getX(fi * 3 + 2));
+      });
     }
     return out;
   }
@@ -213,13 +179,11 @@ export class MeshEditor {
     if (delta.lengthSq() < 1e-10) return;
     this._prevGizmoPos.copy(this._gizmoProxy.position);
 
-    const invMat    = this.targetMesh.matrixWorld.clone().invert();
+    const invMat     = this.targetMesh.matrixWorld.clone().invert();
     const localDelta = delta.clone().transformDirection(invMat);
+    const pos        = this.targetMesh.geometry.attributes.position;
 
-    const pos         = this.targetMesh.geometry.attributes.position;
-    const vertsToMove = this._getSelectedVertIndices();
-
-    vertsToMove.forEach(vi => {
+    this._getSelectedVertIndices().forEach(vi => {
       pos.setX(vi, pos.getX(vi) + localDelta.x);
       pos.setY(vi, pos.getY(vi) + localDelta.y);
       pos.setZ(vi, pos.getZ(vi) + localDelta.z);
@@ -228,8 +192,6 @@ export class MeshEditor {
     pos.needsUpdate = true;
     this.targetMesh.geometry.computeVertexNormals();
     this._buildHelpers();
-
-    // Keep gizmo proxy at same world pos (it moved itself)
     this._prevGizmoPos.copy(this._gizmoProxy.position);
   }
 
@@ -242,22 +204,16 @@ export class MeshEditor {
     const pos = geo.attributes.position;
     const mat = this.targetMesh.matrixWorld;
 
-    // ── Vertices ──
+    // Vertices
     this._vertMeshes = [];
     const sphereGeo  = new THREE.SphereGeometry(VERT_RADIUS, 8, 6);
-
     for (let i = 0; i < pos.count; i++) {
       const wv  = new THREE.Vector3().fromBufferAttribute(pos, i).applyMatrix4(mat);
       const sel = this.selectedVerts.has(i);
-      const m   = new THREE.Mesh(
-        sphereGeo,
-        new THREE.MeshBasicMaterial({
-          color: sel ? VERT_SEL : VERT_COLOR,
-          depthTest: false,
-          transparent: true,
-          opacity: 0.95,
-        })
-      );
+      const m   = new THREE.Mesh(sphereGeo, new THREE.MeshBasicMaterial({
+        color: sel ? VERT_SEL : VERT_COLOR,
+        depthTest: false, transparent: true, opacity: 0.95,
+      }));
       m.position.copy(wv);
       m.renderOrder = 999;
       m.userData.vertIndex = i;
@@ -265,108 +221,79 @@ export class MeshEditor {
       this._vertMeshes.push(m);
     }
 
-    // ── Edges: only real mesh edges (no diagonals) ──
-    // Strategy: collect edges from the index, but deduplicate so we only draw
-    // shared edges once. We also skip internal diagonals added by Three.js
-    // subdivision by detecting them: a "real" edge on a box is shared by exactly
-    // 2 triangles that together form a quad. We keep all edges but avoid
-    // rendering both diagonals of a quad face.
-    const index = geo.index;
-    const edgeMap = new Map(); // key → { count, a, b }
-    this._edgeKeys = [];
-
-    const registerEdge = (a, b) => {
+    // Edges — skip internal diagonals (shared by > 2 triangles)
+    const index  = geo.index;
+    const edgeMap = new Map();
+    const addE = (a, b) => {
       const key = a < b ? `${a}_${b}` : `${b}_${a}`;
       if (!edgeMap.has(key)) edgeMap.set(key, { count: 0, a, b });
       edgeMap.get(key).count++;
     };
-
     if (index) {
       for (let i = 0; i < index.count; i += 3) {
         const a = index.getX(i), b = index.getX(i+1), c = index.getX(i+2);
-        registerEdge(a, b); registerEdge(b, c); registerEdge(c, a);
+        addE(a,b); addE(b,c); addE(c,a);
       }
     } else {
-      for (let i = 0; i < pos.count; i += 3) {
-        registerEdge(i, i+1); registerEdge(i+1, i+2); registerEdge(i+2, i);
-      }
+      for (let i = 0; i < pos.count; i += 3) { addE(i,i+1); addE(i+1,i+2); addE(i+2,i); }
     }
 
-    // Only keep boundary edges (count === 1) and shared edges (count === 2).
-    // Edges shared by MORE than 2 triangles are internal diagonals — skip them.
-    const edgeVerts  = [];
-    const edgeColors = [];
-
+    this._edgeKeys = [];
+    const edgeVerts = [], edgeColors = [];
     edgeMap.forEach(({ count, a, b }, key) => {
-      if (count > 2) return; // skip internal diagonals
-      const va  = new THREE.Vector3().fromBufferAttribute(pos, a).applyMatrix4(mat);
-      const vb  = new THREE.Vector3().fromBufferAttribute(pos, b).applyMatrix4(mat);
+      if (count > 2) return;
+      const va = new THREE.Vector3().fromBufferAttribute(pos, a).applyMatrix4(mat);
+      const vb = new THREE.Vector3().fromBufferAttribute(pos, b).applyMatrix4(mat);
       edgeVerts.push(va.x, va.y, va.z, vb.x, vb.y, vb.z);
       this._edgeKeys.push(key);
-      const sel = this.selectedEdges.has(key);
-      const c   = new THREE.Color(sel ? EDGE_SEL : EDGE_COLOR);
+      const c = new THREE.Color(this.selectedEdges.has(key) ? EDGE_SEL : EDGE_COLOR);
       edgeColors.push(c.r, c.g, c.b, c.r, c.g, c.b);
     });
 
     const edgeGeo = new THREE.BufferGeometry();
     edgeGeo.setAttribute('position', new THREE.Float32BufferAttribute(edgeVerts, 3));
     edgeGeo.setAttribute('color',    new THREE.Float32BufferAttribute(edgeColors, 3));
-
     this._edgeLines = new THREE.LineSegments(edgeGeo, new THREE.LineBasicMaterial({
-      vertexColors: true,
-      depthTest: false,
-      transparent: true,
-      opacity: 0.85,
+      vertexColors: true, depthTest: false, transparent: true, opacity: 0.85,
     }));
     this._edgeLines.renderOrder = 998;
     this.edgeGroup.add(this._edgeLines);
 
-    // ── Faces: one mesh per triangle + a slight solid shell for thickness ──
+    // Faces + thin shell
     this._faceMeshes = [];
-    const faceGroup2 = new THREE.Group();
-    this.faceGroup.add(faceGroup2);
+    const fg2 = new THREE.Group();
+    this.faceGroup.add(fg2);
 
-    // Slight thickness shell on the whole mesh so it's never invisible edge-on
     if (index) {
-      const shellGeo = geo.clone().applyMatrix4(mat);
-      const shell    = new THREE.Mesh(shellGeo, new THREE.MeshBasicMaterial({
-        color: 0x222244,
-        side: THREE.BackSide,
-        transparent: true,
-        opacity: 0.18,
-        depthTest: true,
-      }));
-      shell.scale.setScalar(1.012); // just a hair bigger — gives the "thickness" illusion
+      // Thickness shell
+      const shell = new THREE.Mesh(
+        geo.clone().applyMatrix4(mat),
+        new THREE.MeshBasicMaterial({ color: 0x222244, side: THREE.BackSide, transparent: true, opacity: 0.18 })
+      );
+      shell.scale.setScalar(1.012);
       shell.renderOrder = 996;
-      faceGroup2.add(shell);
-    }
+      fg2.add(shell);
 
-    if (index) {
       for (let i = 0; i < index.count / 3; i++) {
         const ai = index.getX(i*3), bi = index.getX(i*3+1), ci = index.getX(i*3+2);
         const va = new THREE.Vector3().fromBufferAttribute(pos, ai).applyMatrix4(mat);
         const vb = new THREE.Vector3().fromBufferAttribute(pos, bi).applyMatrix4(mat);
         const vc = new THREE.Vector3().fromBufferAttribute(pos, ci).applyMatrix4(mat);
-
-        const fg = new THREE.BufferGeometry();
-        fg.setAttribute('position', new THREE.Float32BufferAttribute([
-          va.x, va.y, va.z,
-          vb.x, vb.y, vb.z,
-          vc.x, vc.y, vc.z,
+        const tfg = new THREE.BufferGeometry();
+        tfg.setAttribute('position', new THREE.Float32BufferAttribute([
+          va.x,va.y,va.z, vb.x,vb.y,vb.z, vc.x,vc.y,vc.z,
         ], 3));
-        fg.setIndex([0, 1, 2]);
-
+        tfg.setIndex([0,1,2]);
         const sel = this.selectedFaces.has(i);
-        const fm  = new THREE.Mesh(fg, new THREE.MeshBasicMaterial({
+        const fm  = new THREE.Mesh(tfg, new THREE.MeshBasicMaterial({
           color: sel ? FACE_SEL : FACE_COLOR,
           transparent: true,
           opacity: sel ? FACE_SEL_OPACITY : FACE_OPACITY,
-          side: THREE.DoubleSide,
-          depthTest: false,
+          side: THREE.DoubleSide, depthTest: false,
         }));
         fm.renderOrder = 997;
         fm.userData.faceIndex = i;
-        faceGroup2.add(fm);
+        fg2.add(fm);
         this._faceMeshes.push(fm);
       }
     }
@@ -382,11 +309,11 @@ export class MeshEditor {
     this._faceMeshes = [];
   }
 
-  // ── Helpers ────────────────────────────────────────────────────────────────
+  // ── Picking ────────────────────────────────────────────────────────────────
   _getNDC(e) {
     return new THREE.Vector2(
       ( e.clientX / window.innerWidth)  * 2 - 1,
-      -(e.clientY / window.innerHeight) * 2 + 1
+      -(e.clientY / window.innerHeight) * 2 + 1,
     );
   }
 
@@ -399,11 +326,10 @@ export class MeshEditor {
   _pickEdge(e) {
     if (!this._edgeLines) return -1;
     this._raycaster.setFromCamera(this._getNDC(e), this.camera);
-    const ray     = this._raycaster.ray;
+    const ray = this._raycaster.ray;
     const posAttr = this._edgeLines.geometry.attributes.position;
-    const THRESH  = 0.08;
-    let bestDist  = THRESH * THRESH, bestIdx = -1;
-
+    const THRESH  = 0.08 * 0.08;
+    let bestDist  = THRESH, bestIdx = -1;
     for (let i = 0; i < this._edgeKeys.length; i++) {
       const va = new THREE.Vector3().fromBufferAttribute(posAttr, i * 2);
       const vb = new THREE.Vector3().fromBufferAttribute(posAttr, i * 2 + 1);
@@ -419,79 +345,67 @@ export class MeshEditor {
     return hits.length > 0 ? hits[0].object.userData.faceIndex : -1;
   }
 
-  // ── Keyboard (scoped to mesh mode) ────────────────────────────────────────
-  _onKeyDown(e) {
-    if (e.ctrlKey && (e.key === 'z' || e.key === 'Z')) {
-      e.stopImmediatePropagation(); // prevent object-mode undo from firing
-      this.undo();
-    }
-  }
-
-  // ── Pointer events ────────────────────────────────────────────────────────
+  // ── Input ──────────────────────────────────────────────────────────────────
   _onPointerDown(e) {
     if (e.button !== 0) return;
-    if (this._gizmo.dragging) return; // gizmo is handling it
-    this._dragStart = { x: e.clientX, y: e.clientY };
-    this._dragging  = false;
+
+    // If the gizmo is hovered (axis highlighted), let it handle the drag
+    if (this._gizmo.axis !== null) return;
+
+    const ndc = this._getNDC(e);
 
     if (this.subMode === 'vertex') {
       const vi = this._pickVertex(e);
       if (vi >= 0) {
-        if (e.shiftKey) {
-          this.selectedVerts.has(vi) ? this.selectedVerts.delete(vi) : this.selectedVerts.add(vi);
-        } else {
-          this.selectedVerts.clear();
-          this.selectedVerts.add(vi);
-        }
+        e.shiftKey
+          ? (this.selectedVerts.has(vi) ? this.selectedVerts.delete(vi) : this.selectedVerts.add(vi))
+          : (this.selectedVerts.clear(), this.selectedVerts.add(vi));
       } else {
         if (!e.shiftKey) this.selectedVerts.clear();
       }
-      this._buildHelpers();
-      this._updateGizmo();
-    }
-
-    if (this.subMode === 'edge') {
+    } else if (this.subMode === 'edge') {
       const ei = this._pickEdge(e);
       if (ei >= 0) {
         const key = this._edgeKeys[ei];
-        if (e.shiftKey) {
-          this.selectedEdges.has(key) ? this.selectedEdges.delete(key) : this.selectedEdges.add(key);
-        } else {
-          this.selectedEdges.clear();
-          this.selectedEdges.add(key);
-        }
+        e.shiftKey
+          ? (this.selectedEdges.has(key) ? this.selectedEdges.delete(key) : this.selectedEdges.add(key))
+          : (this.selectedEdges.clear(), this.selectedEdges.add(key));
       } else {
         if (!e.shiftKey) this.selectedEdges.clear();
       }
-      this._buildHelpers();
-      this._updateGizmo();
-    }
-
-    if (this.subMode === 'face') {
+    } else if (this.subMode === 'face') {
       const fi = this._pickFace(e);
       if (fi >= 0) {
-        if (e.shiftKey) {
-          this.selectedFaces.has(fi) ? this.selectedFaces.delete(fi) : this.selectedFaces.add(fi);
-        } else {
-          this.selectedFaces.clear();
-          this.selectedFaces.add(fi);
-        }
+        e.shiftKey
+          ? (this.selectedFaces.has(fi) ? this.selectedFaces.delete(fi) : this.selectedFaces.add(fi))
+          : (this.selectedFaces.clear(), this.selectedFaces.add(fi));
       } else {
         if (!e.shiftKey) this.selectedFaces.clear();
       }
-      this._buildHelpers();
-      this._updateGizmo();
+    }
+
+    this._buildHelpers();
+    this._updateGizmo();
+  }
+
+  _onKeyDown(e) {
+    // Numpad 1/2/3 → vertex / edge / face
+    if (e.code === 'Numpad1') { this.setSubMode('vertex'); this._syncToolbarButtons('vertex'); return; }
+    if (e.code === 'Numpad2') { this.setSubMode('edge');   this._syncToolbarButtons('edge');   return; }
+    if (e.code === 'Numpad3') { this.setSubMode('face');   this._syncToolbarButtons('face');   return; }
+
+    // Ctrl+Z — scoped undo
+    if (e.ctrlKey && (e.key === 'z' || e.key === 'Z')) {
+      e.stopImmediatePropagation();
+      this.undo();
     }
   }
 
-  _onPointerMove(e) {
-    // nothing needed — gizmo handles its own drag
-  }
-
-  _onPointerUp(e) {
-    if (e.button !== 0) return;
-    this._dragging   = false;
-    this._lastDragPt = null;
-    if (!this._gizmo.dragging) this.orbit.enabled = true;
+  // Keep the toolbar buttons in sync when numpad is used
+  _syncToolbarButtons(mode) {
+    const map = { vertex: 'msub-vert', edge: 'msub-edge', face: 'msub-face' };
+    document.querySelectorAll('#mesh-toolbar .sub-mode-btn')
+      .forEach(b => b.classList.remove('active'));
+    document.getElementById(map[mode])?.classList.add('active');
   }
 }
