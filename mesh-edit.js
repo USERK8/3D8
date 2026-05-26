@@ -1,239 +1,267 @@
 import * as THREE from 'three';
 import { TransformControls } from 'three/addons/controls/TransformControls.js';
 
-const VERT_IDLE      = 0x888888;
-const VERT_SEL       = 0xcc88ff;
-const EDGE_IDLE      = 0x445566;
-const EDGE_SEL       = 0xcc88ff;
-const FACE_SEL_COLOR = 0xcc88ff;
-const FACE_SEL_OP    = 0.38;
-const VERT_RADIUS    = 0.032;
-const DRAG_SCALE     = 0.38;
-const FALLOFF_RADIUS = 1.4;
+// ── Constants (Blender-like defaults) ─────────────────────────────────────────
+const COLOR = {
+  VERT_IDLE : 0x222222,
+  VERT_SEL  : 0xff8800,   // Blender orange
+  VERT_HOVER: 0xffffff,
+  EDGE_IDLE : 0x333333,
+  EDGE_SEL  : 0xff8800,
+  FACE_IDLE_OP  : 0.00,
+  FACE_SEL_COLOR: 0xff8800,
+  FACE_SEL_OP   : 0.30,
+};
 
+const VERT_RADIUS   = 0.028;
+const PICK_THRESH   = 0.055;   // world-space radius for edge/vert picking
+const PROP_RADIUS   = 1.6;     // proportional-edit falloff radius
+const GIZMO_SIZE    = 0.75;
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+function edgeKey(a, b) { return a < b ? `${a}_${b}` : `${b}_${a}`; }
+
+function getWorldVert(posAttr, i, matWorld) {
+  return new THREE.Vector3().fromBufferAttribute(posAttr, i).applyMatrix4(matWorld);
+}
+
+// Smooth-step weight  0→1 as dist goes PROP_RADIUS→0
+function smoothWeight(dist, radius) {
+  if (dist >= radius) return 0;
+  const t = dist / radius;
+  return 1 - t * t * (3 - 2 * t);
+}
+
+// ── Main class ────────────────────────────────────────────────────────────────
 export class MeshEditor {
   constructor(scene, camera, renderer, orbitControls) {
     this.scene    = scene;
     this.camera   = camera;
     this.renderer = renderer;
     this.orbit    = orbitControls;
+
     this.targetMesh = null;
+    this.subMode    = 'vertex';   // 'vertex' | 'edge' | 'face'
 
-    this.vertGroup = new THREE.Group();
-    this.edgeGroup = new THREE.Group();
-    this.faceGroup = new THREE.Group();
-    scene.add(this.vertGroup, this.edgeGroup, this.faceGroup);
+    // Selection state
+    this.selVerts = new Set();   // vertex indices
+    this.selEdges = new Set();   // edge keys  "a_b"
+    this.selFaces = new Set();   // face indices
 
-    this.subMode = 'vertex';
-    this.selectedVerts = new Set();
-    this.selectedEdges = new Set();
-    this.selectedFaces = new Set();
+    // Undo
+    this._undoStack  = [];
+    this._preSnap    = null;
 
-    this._undoStack   = [];
-    this._pendingSnap = null;
-    this._applying    = false; // re-entrance guard
+    // Internal bookkeeping rebuilt each frame helpers are refreshed
+    this._vertMeshes  = [];      // THREE.Mesh per vertex
+    this._edgeEntries = [];      // [{key, a, b, line}]
+    this._faceMeshes  = [];      // THREE.Mesh per face
+    this._edgeLineSet = null;    // single LineSegments object
 
-    this._raycaster  = new THREE.Raycaster();
-    this._vertMeshes = [];
-    this._edgeKeys   = [];
-    this._faceMeshes = [];
-    this._edgeLines  = null;
+    // Overlay groups
+    this._grpVert = new THREE.Group();
+    this._grpEdge = new THREE.Group();
+    this._grpFace = new THREE.Group();
+    scene.add(this._grpVert, this._grpEdge, this._grpFace);
 
-    // Gizmo lives at the centroid; we track its displacement manually
-    this._gizmoProxy   = new THREE.Object3D();
-    this._prevGizmoPos = new THREE.Vector3();
-    this._gizmoDirty   = false;
-    scene.add(this._gizmoProxy);
+    // Raycaster
+    this._rc = new THREE.Raycaster();
+    this._rc.params.Line.threshold = 0.04;
+
+    // Gizmo – attach to a proxy object so we control position explicitly
+    this._proxy     = new THREE.Object3D();
+    this._proxyPrev = new THREE.Vector3();
+    scene.add(this._proxy);
 
     this._gizmo = new TransformControls(camera, renderer.domElement);
     this._gizmo.setMode('translate');
-    this._gizmo.setSize(0.7);
+    this._gizmo.setSize(GIZMO_SIZE);
     scene.add(this._gizmo);
 
+    // Gizmo events
     this._gizmo.addEventListener('mouseDown', () => {
       this.orbit.enabled = false;
-      this._snapPositions();
-      this._prevGizmoPos.copy(this._gizmoProxy.position);
+      this._saveSnap();
+      this._proxyPrev.copy(this._proxy.position);
     });
     this._gizmo.addEventListener('mouseUp', () => {
       this.orbit.enabled = true;
-      this._pushUndo();
-      // Re-anchor gizmo at real centroid after drag
-      const c = this._getSelectionCentroid();
-      if (c) { this._gizmoProxy.position.copy(c); this._prevGizmoPos.copy(c); }
+      this._commitSnap();
+      this._reanchorGizmo();
     });
     this._gizmo.addEventListener('change', () => {
-      if (!this._gizmo.dragging || this._applying) return;
+      if (!this._gizmo.dragging) return;
       this._applyGizmoDelta();
     });
 
+    // Box-select state
+    this._box = { active: false, start: null, div: null };
+
+    // Bind handlers
     this._onPointerDown = this._onPointerDown.bind(this);
+    this._onPointerMove = this._onPointerMove.bind(this);
+    this._onPointerUp   = this._onPointerUp.bind(this);
     this._onKeyDown     = this._onKeyDown.bind(this);
   }
 
-  // ── Public API ─────────────────────────────────────────────────────────────
+  // ── Public API ───────────────────────────────────────────────────────────────
   enter(mesh) {
     this.targetMesh = mesh;
-    this.selectedVerts.clear();
-    this.selectedEdges.clear();
-    this.selectedFaces.clear();
-    this._undoStack = [];
     this.subMode    = 'vertex';
-    this._buildHelpers();
+    this.selVerts.clear(); this.selEdges.clear(); this.selFaces.clear();
+    this._undoStack = [];
+    this._refresh();
     this._hideGizmo();
-    this.renderer.domElement.addEventListener('pointerdown', this._onPointerDown);
+
+    const el = this.renderer.domElement;
+    el.addEventListener('pointerdown', this._onPointerDown);
+    el.addEventListener('pointermove', this._onPointerMove);
+    el.addEventListener('pointerup',   this._onPointerUp);
     window.addEventListener('keydown', this._onKeyDown);
   }
 
   exit() {
-    this._clearHelpers();
+    this._clear();
     this._hideGizmo();
     this.targetMesh = null;
-    this.selectedVerts.clear();
-    this.selectedEdges.clear();
-    this.selectedFaces.clear();
-    this.renderer.domElement.removeEventListener('pointerdown', this._onPointerDown);
+    this.selVerts.clear(); this.selEdges.clear(); this.selFaces.clear();
+
+    const el = this.renderer.domElement;
+    el.removeEventListener('pointerdown', this._onPointerDown);
+    el.removeEventListener('pointermove', this._onPointerMove);
+    el.removeEventListener('pointerup',   this._onPointerUp);
     window.removeEventListener('keydown', this._onKeyDown);
+    this._endBoxSelect();
   }
 
   setSubMode(mode) {
     this.subMode = mode;
-    // Clear ONLY the selections irrelevant to new mode
-    if (mode !== 'vertex') this.selectedVerts.clear();
-    if (mode !== 'edge')   this.selectedEdges.clear();
-    if (mode !== 'face')   this.selectedFaces.clear();
-    this._buildHelpers();
-    this._hideGizmo();
+    if (mode !== 'vertex') this.selVerts.clear();
+    if (mode !== 'edge')   this.selEdges.clear();
+    if (mode !== 'face')   this.selFaces.clear();
+    this._refresh();
+    this._updateGizmo();
   }
 
   undo() {
     if (!this._undoStack.length) return false;
     const snap = this._undoStack.pop();
     const pos  = this.targetMesh.geometry.attributes.position;
-    for (let i = 0; i < snap.length; i++) pos.setXYZ(i, snap[i].x, snap[i].y, snap[i].z);
+    snap.forEach((v, i) => pos.setXYZ(i, v.x, v.y, v.z));
     pos.needsUpdate = true;
     this.targetMesh.geometry.computeVertexNormals();
-    this._buildHelpers();
+    this._refresh();
     this._updateGizmo();
     return true;
   }
 
-  // ── Undo ───────────────────────────────────────────────────────────────────
-  _snapPositions() {
+  // ── Undo ─────────────────────────────────────────────────────────────────────
+  _saveSnap() {
     const pos = this.targetMesh.geometry.attributes.position;
-    this._pendingSnap = Array.from({ length: pos.count }, (_, i) =>
-      new THREE.Vector3().fromBufferAttribute(pos, i));
+    this._preSnap = Array.from({ length: pos.count },
+      (_, i) => new THREE.Vector3().fromBufferAttribute(pos, i));
   }
-  _pushUndo() {
-    if (this._pendingSnap) { this._undoStack.push(this._pendingSnap); this._pendingSnap = null; }
+  _commitSnap() {
+    if (this._preSnap) { this._undoStack.push(this._preSnap); this._preSnap = null; }
   }
 
-  // ── Gizmo ──────────────────────────────────────────────────────────────────
+  // ── Gizmo ────────────────────────────────────────────────────────────────────
   _showGizmo(worldPos) {
-    this._gizmoProxy.position.copy(worldPos);
-    this._prevGizmoPos.copy(worldPos);
-    this._gizmo.attach(this._gizmoProxy);
+    this._proxy.position.copy(worldPos);
+    this._proxyPrev.copy(worldPos);
+    this._gizmo.attach(this._proxy);
   }
   _hideGizmo() { this._gizmo.detach(); }
+
+  _reanchorGizmo() {
+    const c = this._centroid();
+    if (c) this._showGizmo(c); else this._hideGizmo();
+  }
+
   _updateGizmo() {
-    const c = this._getSelectionCentroid();
+    const c = this._centroid();
     c ? this._showGizmo(c) : this._hideGizmo();
   }
 
-  _getSelectionCentroid() {
-    const pos = this.targetMesh?.geometry?.attributes?.position;
-    const mat = this.targetMesh?.matrixWorld;
-    if (!pos || !mat) return null;
-    const verts = this._getSelectedVertIndices();
-    if (!verts.size) return null;
-    const c = new THREE.Vector3();
-    verts.forEach(vi => c.add(new THREE.Vector3().fromBufferAttribute(pos, vi).applyMatrix4(mat)));
-    return c.divideScalar(verts.size);
+  _centroid() {
+    const vis = this._selectedVertIndices();
+    if (!vis.size) return null;
+    const pos = this.targetMesh.geometry.attributes.position;
+    const mat = this.targetMesh.matrixWorld;
+    const c   = new THREE.Vector3();
+    vis.forEach(i => c.add(getWorldVert(pos, i, mat)));
+    return c.divideScalar(vis.size);
   }
 
-  _getSelectedVertIndices() {
+  _selectedVertIndices() {
     const out   = new Set();
-    const index = this.targetMesh?.geometry?.index;
+    const geo   = this.targetMesh?.geometry;
+    const index = geo?.index;
     if (this.subMode === 'vertex') {
-      this.selectedVerts.forEach(vi => out.add(vi));
+      this.selVerts.forEach(i => out.add(i));
     } else if (this.subMode === 'edge') {
-      this.selectedEdges.forEach(key => {
-        const [a, b] = key.split('_').map(Number);
+      this.selEdges.forEach(k => {
+        const [a, b] = k.split('_').map(Number);
         out.add(a); out.add(b);
       });
     } else if (this.subMode === 'face' && index) {
-      this.selectedFaces.forEach(fi => {
-        out.add(index.getX(fi * 3));
-        out.add(index.getX(fi * 3 + 1));
-        out.add(index.getX(fi * 3 + 2));
+      this.selFaces.forEach(fi => {
+        out.add(index.getX(fi*3));
+        out.add(index.getX(fi*3+1));
+        out.add(index.getX(fi*3+2));
       });
     }
     return out;
   }
 
-  // ── Movement ───────────────────────────────────────────────────────────────
+  // ── Movement ──────────────────────────────────────────────────────────────────
   _applyGizmoDelta() {
-    this._applying = true;
+    const rawDelta = this._proxy.position.clone().sub(this._proxyPrev);
+    if (rawDelta.lengthSq() < 1e-16) return;
+    this._proxyPrev.copy(this._proxy.position);
 
-    const rawDelta = this._gizmoProxy.position.clone().sub(this._prevGizmoPos);
-    if (rawDelta.lengthSq() < 1e-14) { this._applying = false; return; }
+    const pos      = this.targetMesh.geometry.attributes.position;
+    const mat      = this.targetMesh.matrixWorld;
+    const invMat   = mat.clone().invert();
+    // Convert world delta → local delta (direction only, no scale distortion)
+    const localDelta = rawDelta.clone().transformDirection(invMat);
 
-    // Scale down speed
-    const delta = rawDelta.clone().multiplyScalar(DRAG_SCALE);
+    const selVI = this._selectedVertIndices();
 
-    // Immediately push proxy back by the unscaled amount so next frame
-    // delta is fresh — this breaks the feedback loop
-    this._prevGizmoPos.copy(this._gizmoProxy.position);
-
-    const pos        = this.targetMesh.geometry.attributes.position;
-    const mat        = this.targetMesh.matrixWorld;
-    const invMat     = mat.clone().invert();
-    const localDelta = delta.clone().transformDirection(invMat);
-
-    const selectedVI = this._getSelectedVertIndices();
-
-    // Cache world positions of selected verts BEFORE moving anything
-    const selWorldPos = [];
-    selectedVI.forEach(vi =>
-      selWorldPos.push(new THREE.Vector3().fromBufferAttribute(pos, vi).applyMatrix4(mat))
-    );
+    // Build world positions of selected verts once for prop-edit distance calc
+    const selWP = [];
+    selVI.forEach(i => selWP.push(getWorldVert(pos, i, mat)));
 
     for (let i = 0; i < pos.count; i++) {
-      let weight;
-      if (selectedVI.has(i)) {
-        weight = 1.0;
+      let w;
+      if (selVI.has(i)) {
+        w = 1.0;
       } else {
-        const wv = new THREE.Vector3().fromBufferAttribute(pos, i).applyMatrix4(mat);
-        let minDist = Infinity;
-        for (const sv of selWorldPos) { const d = wv.distanceTo(sv); if (d < minDist) minDist = d; }
-        if (minDist >= FALLOFF_RADIUS) continue;
-        const t = minDist / FALLOFF_RADIUS;
-        weight = 1 - t * t * (3 - 2 * t); // smoothstep
-        if (weight < 0.001) continue;
+        // Proportional editing: find closest selected vert in world space
+        const wp = getWorldVert(pos, i, mat);
+        let minD = Infinity;
+        for (const sp of selWP) { const d = wp.distanceTo(sp); if (d < minD) minD = d; }
+        w = smoothWeight(minD, PROP_RADIUS);
+        if (w < 0.001) continue;
       }
-      pos.setX(i, pos.getX(i) + localDelta.x * weight);
-      pos.setY(i, pos.getY(i) + localDelta.y * weight);
-      pos.setZ(i, pos.getZ(i) + localDelta.z * weight);
+      pos.setX(i, pos.getX(i) + localDelta.x * w);
+      pos.setY(i, pos.getY(i) + localDelta.y * w);
+      pos.setZ(i, pos.getZ(i) + localDelta.z * w);
     }
 
     pos.needsUpdate = true;
     this.targetMesh.geometry.computeVertexNormals();
-
-    // Rebuild helpers WITHOUT touching gizmo position (avoid feedback)
-    this._buildHelpersOnly();
-
-    this._applying = false;
+    // Rebuild overlays but don't touch gizmo (avoid feedback loop)
+    this._refreshGeomOnly();
   }
 
-  // ── Build helpers ──────────────────────────────────────────────────────────
-  // Full rebuild including gizmo reposition
-  _buildHelpers() {
-    this._buildHelpersOnly();
+  // ── Overlay building ──────────────────────────────────────────────────────────
+  _refresh() {
+    this._refreshGeomOnly();
   }
 
-  // Rebuild geometry helpers only — does NOT reposition gizmo (safe during drag)
-  _buildHelpersOnly() {
-    this._clearHelpers();
+  _refreshGeomOnly() {
+    this._clear();
     if (!this.targetMesh) return;
 
     const geo   = this.targetMesh.geometry;
@@ -242,179 +270,158 @@ export class MeshEditor {
     const index = geo.index;
     const mode  = this.subMode;
 
-    // ── Vertices (always shown in vertex mode) ──
-    this._vertMeshes = [];
-    if (mode === 'vertex') {
-      const sphereGeo = new THREE.SphereGeometry(VERT_RADIUS, 8, 6);
-      for (let i = 0; i < pos.count; i++) {
-        const wv  = new THREE.Vector3().fromBufferAttribute(pos, i).applyMatrix4(mat);
-        const sel = this.selectedVerts.has(i);
-        const m   = new THREE.Mesh(sphereGeo, new THREE.MeshBasicMaterial({
-          color: sel ? VERT_SEL : VERT_IDLE,
-          depthTest: false, transparent: true,
-          opacity: sel ? 0.95 : 0.45,
-        }));
-        m.position.copy(wv);
-        m.renderOrder        = 999;
-        m.userData.vertIndex = i;
-        this.vertGroup.add(m);
-        this._vertMeshes.push(m);
-      }
-    }
-
-    // ── Edges ──
-    // Build edge map with adjacency to detect quads (diagonals)
-    const edgeMap = new Map(); // key → {count, a, b, faces:[]}
-    const addE = (a, b, fi) => {
-      const key = a < b ? `${a}_${b}` : `${b}_${a}`;
-      if (!edgeMap.has(key)) edgeMap.set(key, { count: 0, a, b, faces: [] });
-      const e = edgeMap.get(key);
-      e.count++;
+    // ── Build edge map ──────────────────────────────────────────────────────
+    // edgeMap: key → {a, b, faceCount, faces}
+    const edgeMap = new Map();
+    const addEdge = (a, b, fi) => {
+      const k = edgeKey(a, b);
+      if (!edgeMap.has(k)) edgeMap.set(k, { a, b, faceCount: 0, faces: [] });
+      const e = edgeMap.get(k);
+      e.faceCount++;
       e.faces.push(fi);
     };
+
     if (index) {
       for (let i = 0; i < index.count; i += 3) {
-        const fi = Math.floor(i / 3);
+        const fi = i / 3 | 0;
         const a = index.getX(i), b = index.getX(i+1), c = index.getX(i+2);
-        addE(a, b, fi); addE(b, c, fi); addE(c, a, fi);
+        addEdge(a, b, fi); addEdge(b, c, fi); addEdge(c, a, fi);
       }
     } else {
       for (let i = 0; i < pos.count; i += 3) {
-        const fi = Math.floor(i / 3);
-        addE(i, i+1, fi); addE(i+1, i+2, fi); addE(i+2, i, fi);
+        const fi = i / 3 | 0;
+        addEdge(i, i+1, fi); addEdge(i+1, i+2, fi); addEdge(i+2, i, fi);
       }
     }
 
-    // Detect quads: two triangles sharing an edge where the 4 verts are coplanar
-    // → the shared edge is a diagonal, skip it
-    const isDiagonal = (e) => {
-      if (e.count !== 2 || !index) return false;
-      const [f0, f1] = e.faces;
-      // Gather all 4 unique verts of the quad
-      const getTriVerts = (fi) => [
-        index.getX(fi*3), index.getX(fi*3+1), index.getX(fi*3+2),
-      ];
-      const t0 = getTriVerts(f0), t1 = getTriVerts(f1);
+    // Detect and skip quad diagonals (the shared edge of two coplanar tris)
+    const isQuadDiag = ({ faceCount, faces, a, b }) => {
+      if (faceCount !== 2 || !index) return false;
+      const tv = fi => [index.getX(fi*3), index.getX(fi*3+1), index.getX(fi*3+2)];
+      const t0 = tv(faces[0]), t1 = tv(faces[1]);
       const all = [...new Set([...t0, ...t1])];
-      if (all.length !== 4) return false; // not a quad
-      // Check coplanarity: compute normal of first tri, check 4th vert against it
-      const vp = (i) => new THREE.Vector3().fromBufferAttribute(pos, i);
-      const va = vp(t0[0]), vb = vp(t0[1]), vc = vp(t0[2]);
-      const n  = new THREE.Vector3().crossVectors(
-        vb.clone().sub(va), vc.clone().sub(va)
-      ).normalize();
+      if (all.length !== 4) return false;
+      const vp = i => new THREE.Vector3().fromBufferAttribute(pos, i);
+      const va = vp(t0[0]), n = new THREE.Vector3()
+        .crossVectors(vp(t0[1]).sub(va), vp(t0[2]).sub(va)).normalize();
       const vd = vp(all.find(v => !t0.includes(v)));
-      // If the 4th vert is on the same plane (within tolerance), it's a diagonal
-      return Math.abs(n.dot(vd.clone().sub(va))) < 0.001;
+      return Math.abs(n.dot(vd.clone().sub(va))) < 0.002;
     };
 
-    this._edgeKeys = [];
-    const edgeVerts = [], edgeColors = [];
-    if (mode === 'edge' || mode === 'vertex') {
+    // ── Vertex overlays ────────────────────────────────────────────────────
+    this._vertMeshes = [];
+    if (mode === 'vertex') {
+      const baseGeo = new THREE.SphereGeometry(VERT_RADIUS, 7, 5);
+      for (let i = 0; i < pos.count; i++) {
+        const sel  = this.selVerts.has(i);
+        const mesh = new THREE.Mesh(baseGeo, new THREE.MeshBasicMaterial({
+          color:       sel ? COLOR.VERT_SEL : COLOR.VERT_IDLE,
+          depthTest:   false,
+          transparent: true,
+          opacity:     sel ? 1.0 : 0.55,
+        }));
+        mesh.position.copy(getWorldVert(pos, i, mat));
+        mesh.renderOrder        = 999;
+        mesh.userData.vertIndex = i;
+        this._grpVert.add(mesh);
+        this._vertMeshes.push(mesh);
+      }
+    }
+
+    // ── Edge overlays ──────────────────────────────────────────────────────
+    this._edgeEntries = [];
+    const positions = [], colors = [];
+
+    const showEdges = (mode === 'edge' || mode === 'vertex' || mode === 'face');
+    if (showEdges) {
       edgeMap.forEach((e, key) => {
-        if (isDiagonal(e)) return; // skip quad diagonals
-        const va = new THREE.Vector3().fromBufferAttribute(pos, e.a).applyMatrix4(mat);
-        const vb = new THREE.Vector3().fromBufferAttribute(pos, e.b).applyMatrix4(mat);
-        edgeVerts.push(va.x,va.y,va.z, vb.x,vb.y,vb.z);
-        this._edgeKeys.push(key);
-        const sel = this.selectedEdges.has(key);
-        const c   = new THREE.Color(sel ? EDGE_SEL : EDGE_IDLE);
-        edgeColors.push(c.r,c.g,c.b, c.r,c.g,c.b);
-      });
-    } else if (mode === 'face') {
-      // In face mode still show edges but dimmer, no selection colouring
-      edgeMap.forEach((e, key) => {
-        if (isDiagonal(e)) return;
-        const va = new THREE.Vector3().fromBufferAttribute(pos, e.a).applyMatrix4(mat);
-        const vb = new THREE.Vector3().fromBufferAttribute(pos, e.b).applyMatrix4(mat);
-        edgeVerts.push(va.x,va.y,va.z, vb.x,vb.y,vb.z);
-        this._edgeKeys.push(key);
-        const c = new THREE.Color(EDGE_IDLE);
-        edgeColors.push(c.r,c.g,c.b, c.r,c.g,c.b);
+        if (isQuadDiag(e)) return;
+        const wa = getWorldVert(pos, e.a, mat);
+        const wb = getWorldVert(pos, e.b, mat);
+        positions.push(wa.x, wa.y, wa.z, wb.x, wb.y, wb.z);
+        const sel = (mode === 'edge') && this.selEdges.has(key);
+        const c   = new THREE.Color(sel ? COLOR.EDGE_SEL : COLOR.EDGE_IDLE);
+        colors.push(c.r, c.g, c.b, c.r, c.g, c.b);
+        this._edgeEntries.push({ key, a: e.a, b: e.b,
+          segStart: (this._edgeEntries.length) * 2 });
       });
     }
 
-    if (edgeVerts.length) {
-      const edgeGeo = new THREE.BufferGeometry();
-      edgeGeo.setAttribute('position', new THREE.Float32BufferAttribute(edgeVerts, 3));
-      edgeGeo.setAttribute('color',    new THREE.Float32BufferAttribute(edgeColors, 3));
-      this._edgeLines = new THREE.LineSegments(edgeGeo, new THREE.LineBasicMaterial({
-        vertexColors: true, depthTest: false, transparent: true, opacity: 0.7,
+    if (positions.length) {
+      const eg = new THREE.BufferGeometry();
+      eg.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+      eg.setAttribute('color',    new THREE.Float32BufferAttribute(colors,    3));
+      this._edgeLineSet = new THREE.LineSegments(eg, new THREE.LineBasicMaterial({
+        vertexColors: true, depthTest: false, transparent: true,
+        opacity: mode === 'face' ? 0.45 : 0.85,
       }));
-      this._edgeLines.renderOrder = 998;
-      this.edgeGroup.add(this._edgeLines);
+      this._edgeLineSet.renderOrder = 998;
+      this._grpEdge.add(this._edgeLineSet);
     }
 
-    // ── Faces (only shown in face mode) ──
+    // ── Face overlays ──────────────────────────────────────────────────────
     this._faceMeshes = [];
     if (mode === 'face' && index) {
-      // Thin back-side shell for edge-on visibility
-      const shell = new THREE.Mesh(
-        geo.clone().applyMatrix4(mat),
-        new THREE.MeshBasicMaterial({ color: 0x1a0a2e, side: THREE.BackSide, transparent: true, opacity: 0.12 })
-      );
-      shell.scale.setScalar(1.010);
-      shell.renderOrder = 996;
-      this.faceGroup.add(shell);
-
-      for (let i = 0; i < index.count / 3; i++) {
-        const ai = index.getX(i*3), bi = index.getX(i*3+1), ci = index.getX(i*3+2);
-        const va = new THREE.Vector3().fromBufferAttribute(pos, ai).applyMatrix4(mat);
-        const vb = new THREE.Vector3().fromBufferAttribute(pos, bi).applyMatrix4(mat);
-        const vc = new THREE.Vector3().fromBufferAttribute(pos, ci).applyMatrix4(mat);
-        const tfg = new THREE.BufferGeometry();
-        tfg.setAttribute('position', new THREE.Float32BufferAttribute([
-          va.x,va.y,va.z, vb.x,vb.y,vb.z, vc.x,vc.y,vc.z,
-        ], 3));
-        tfg.setIndex([0, 1, 2]);
-        const sel = this.selectedFaces.has(i);
-        const fm  = new THREE.Mesh(tfg, new THREE.MeshBasicMaterial({
-          color: FACE_SEL_COLOR,
+      const faceCount = index.count / 3 | 0;
+      for (let fi = 0; fi < faceCount; fi++) {
+        const ai = index.getX(fi*3), bi = index.getX(fi*3+1), ci = index.getX(fi*3+2);
+        const va = getWorldVert(pos, ai, mat);
+        const vb = getWorldVert(pos, bi, mat);
+        const vc = getWorldVert(pos, ci, mat);
+        const fg = new THREE.BufferGeometry();
+        fg.setAttribute('position', new THREE.Float32BufferAttribute(
+          [va.x,va.y,va.z, vb.x,vb.y,vb.z, vc.x,vc.y,vc.z], 3));
+        fg.setIndex([0, 1, 2]);
+        const sel = this.selFaces.has(fi);
+        const fm  = new THREE.Mesh(fg, new THREE.MeshBasicMaterial({
+          color:       COLOR.FACE_SEL_COLOR,
           transparent: true,
-          opacity: sel ? FACE_SEL_OP : 0.0,
-          side: THREE.DoubleSide,
-          depthTest: false,
+          opacity:     sel ? COLOR.FACE_SEL_OP : COLOR.FACE_IDLE_OP,
+          side:        THREE.DoubleSide,
+          depthTest:   false,
         }));
         fm.renderOrder        = 997;
-        fm.userData.faceIndex = i;
-        this.faceGroup.add(fm);
+        fm.userData.faceIndex = fi;
+        this._grpFace.add(fm);
         this._faceMeshes.push(fm);
       }
     }
   }
 
-  _clearHelpers() {
-    [this.vertGroup, this.edgeGroup, this.faceGroup].forEach(g => {
+  _clear() {
+    [this._grpVert, this._grpEdge, this._grpFace].forEach(g => {
       while (g.children.length) g.remove(g.children[0]);
     });
-    this._vertMeshes = [];
-    this._edgeLines  = null;
-    this._edgeKeys   = [];
-    this._faceMeshes = [];
+    this._vertMeshes  = [];
+    this._edgeEntries = [];
+    this._faceMeshes  = [];
+    this._edgeLineSet = null;
   }
 
-  // ── Picking ────────────────────────────────────────────────────────────────
-  _getNDC(e) {
+  // ── Picking ───────────────────────────────────────────────────────────────────
+  _ndc(clientX, clientY) {
+    const r = this.renderer.domElement.getBoundingClientRect();
     return new THREE.Vector2(
-      ( e.clientX / window.innerWidth)  * 2 - 1,
-      -(e.clientY / window.innerHeight) * 2 + 1,
+      ((clientX - r.left)  / r.width)  * 2 - 1,
+      -((clientY - r.top) / r.height) * 2 + 1,
     );
   }
 
-  _pickVertex(e) {
-    this._raycaster.setFromCamera(this._getNDC(e), this.camera);
-    const hits = this._raycaster.intersectObjects(this._vertMeshes);
-    return hits.length > 0 ? hits[0].object.userData.vertIndex : -1;
+  _pickVert(e) {
+    this._rc.setFromCamera(this._ndc(e.clientX, e.clientY), this.camera);
+    const hits = this._rc.intersectObjects(this._vertMeshes);
+    return hits.length ? hits[0].object.userData.vertIndex : -1;
   }
 
   _pickEdge(e) {
-    if (!this._edgeLines) return -1;
-    this._raycaster.setFromCamera(this._getNDC(e), this.camera);
-    const ray = this._raycaster.ray;
-    const posAttr = this._edgeLines.geometry.attributes.position;
-    const THRESH  = 0.08 * 0.08;
-    let bestDist  = THRESH, bestIdx = -1;
-    for (let i = 0; i < this._edgeKeys.length; i++) {
+    if (!this._edgeLineSet || !this._edgeEntries.length) return -1;
+    this._rc.setFromCamera(this._ndc(e.clientX, e.clientY), this.camera);
+    const ray      = this._rc.ray;
+    const posAttr  = this._edgeLineSet.geometry.attributes.position;
+    const THRESH2  = PICK_THRESH * PICK_THRESH;
+    let bestDist   = THRESH2, bestIdx = -1;
+
+    for (let i = 0; i < this._edgeEntries.length; i++) {
       const va = new THREE.Vector3().fromBufferAttribute(posAttr, i * 2);
       const vb = new THREE.Vector3().fromBufferAttribute(posAttr, i * 2 + 1);
       const d  = ray.distanceSqToSegment(va, vb);
@@ -424,63 +431,230 @@ export class MeshEditor {
   }
 
   _pickFace(e) {
-    this._raycaster.setFromCamera(this._getNDC(e), this.camera);
-    const hits = this._raycaster.intersectObjects(this._faceMeshes);
-    return hits.length > 0 ? hits[0].object.userData.faceIndex : -1;
+    this._rc.setFromCamera(this._ndc(e.clientX, e.clientY), this.camera);
+    const hits = this._rc.intersectObjects(this._faceMeshes);
+    return hits.length ? hits[0].object.userData.faceIndex : -1;
   }
 
-  // ── Input ──────────────────────────────────────────────────────────────────
+  // ── Input handling ────────────────────────────────────────────────────────────
   _onPointerDown(e) {
     if (e.button !== 0) return;
+    // If gizmo is being grabbed, let it handle
     if (this._gizmo.axis !== null) return;
 
+    // B-key box select starts on pointer down only if _box.pending set by keydown
+    if (this._box.pending) {
+      this._startBoxSelect(e);
+      return;
+    }
+
+    // Normal click-select
+    this._doClickSelect(e);
+  }
+
+  _onPointerMove(e) {
+    if (this._box.active) this._updateBoxSelect(e);
+  }
+
+  _onPointerUp(e) {
+    if (this._box.active) { this._endBoxSelect(e); return; }
+  }
+
+  _doClickSelect(e) {
+    const shift = e.shiftKey;
+
     if (this.subMode === 'vertex') {
-      const vi = this._pickVertex(e);
+      const vi = this._pickVert(e);
       if (vi >= 0) {
-        e.shiftKey
-          ? (this.selectedVerts.has(vi) ? this.selectedVerts.delete(vi) : this.selectedVerts.add(vi))
-          : (this.selectedVerts.clear(), this.selectedVerts.add(vi));
-      } else {
-        if (!e.shiftKey) this.selectedVerts.clear();
+        if (shift) {
+          this.selVerts.has(vi) ? this.selVerts.delete(vi) : this.selVerts.add(vi);
+        } else {
+          this.selVerts.clear(); this.selVerts.add(vi);
+        }
+      } else if (!shift) {
+        this.selVerts.clear();
       }
+
     } else if (this.subMode === 'edge') {
       const ei = this._pickEdge(e);
       if (ei >= 0) {
-        const key = this._edgeKeys[ei];
-        e.shiftKey
-          ? (this.selectedEdges.has(key) ? this.selectedEdges.delete(key) : this.selectedEdges.add(key))
-          : (this.selectedEdges.clear(), this.selectedEdges.add(key));
-      } else {
-        if (!e.shiftKey) this.selectedEdges.clear();
+        const key = this._edgeEntries[ei].key;
+        if (shift) {
+          this.selEdges.has(key) ? this.selEdges.delete(key) : this.selEdges.add(key);
+        } else {
+          this.selEdges.clear(); this.selEdges.add(key);
+        }
+      } else if (!shift) {
+        this.selEdges.clear();
       }
+
     } else if (this.subMode === 'face') {
       const fi = this._pickFace(e);
       if (fi >= 0) {
-        e.shiftKey
-          ? (this.selectedFaces.has(fi) ? this.selectedFaces.delete(fi) : this.selectedFaces.add(fi))
-          : (this.selectedFaces.clear(), this.selectedFaces.add(fi));
-      } else {
-        if (!e.shiftKey) this.selectedFaces.clear();
+        if (shift) {
+          this.selFaces.has(fi) ? this.selFaces.delete(fi) : this.selFaces.add(fi);
+        } else {
+          this.selFaces.clear(); this.selFaces.add(fi);
+        }
+      } else if (!shift) {
+        this.selFaces.clear();
       }
     }
 
-    this._buildHelpers();
+    this._refresh();
     this._updateGizmo();
   }
 
+  // ── Box select (B key → drag) ─────────────────────────────────────────────────
+  _startBoxSelect(e) {
+    this._box.pending = false;
+    this._box.active  = true;
+    this._box.start   = { x: e.clientX, y: e.clientY };
+
+    const div = document.createElement('div');
+    div.style.cssText = `position:fixed;border:1px solid #ff8800;background:rgba(255,136,0,0.08);
+      pointer-events:none;z-index:9999;`;
+    document.body.appendChild(div);
+    this._box.div = div;
+
+    this._updateBoxSelect(e);
+  }
+
+  _updateBoxSelect(e) {
+    if (!this._box.div) return;
+    const s = this._box.start;
+    const x = Math.min(s.x, e.clientX), y = Math.min(s.y, e.clientY);
+    const w = Math.abs(e.clientX - s.x), h = Math.abs(e.clientY - s.y);
+    Object.assign(this._box.div.style, {
+      left: x + 'px', top: y + 'px', width: w + 'px', height: h + 'px',
+    });
+    this._box.end = { x: e.clientX, y: e.clientY };
+  }
+
+  _endBoxSelect(e) {
+    if (!this._box.active) return;
+    this._box.active = false;
+    if (this._box.div) { this._box.div.remove(); this._box.div = null; }
+    if (!this._box.start || !this._box.end) return;
+
+    const additive = e?.shiftKey;
+
+    const r    = this.renderer.domElement.getBoundingClientRect();
+    const s    = this._box.start, en = this._box.end ?? s;
+    const minX = Math.min(s.x, en.x), maxX = Math.max(s.x, en.x);
+    const minY = Math.min(s.y, en.y), maxY = Math.max(s.y, en.y);
+
+    // NDC rect
+    const ndcMin = new THREE.Vector2(
+      ((minX - r.left) / r.width)  * 2 - 1,
+      -((maxY - r.top) / r.height) * 2 + 1,
+    );
+    const ndcMax = new THREE.Vector2(
+      ((maxX - r.left) / r.width)  * 2 - 1,
+      -((minY - r.top) / r.height) * 2 + 1,
+    );
+
+    const inBox = (ndc) => ndc.x >= ndcMin.x && ndc.x <= ndcMax.x
+                        && ndc.y >= ndcMin.y && ndc.y <= ndcMax.y;
+
+    const proj     = new THREE.Vector3();
+    const projMat  = new THREE.Matrix4().multiplyMatrices(
+      this.camera.projectionMatrix, this.camera.matrixWorldInverse);
+    const pos      = this.targetMesh.geometry.attributes.position;
+    const mat      = this.targetMesh.matrixWorld;
+    const index    = this.targetMesh.geometry.index;
+
+    const ndcOfVert = (i) => {
+      proj.fromBufferAttribute(pos, i).applyMatrix4(mat).applyMatrix4(projMat);
+      return new THREE.Vector2(proj.x, proj.y);
+    };
+
+    if (!additive) {
+      this.selVerts.clear(); this.selEdges.clear(); this.selFaces.clear();
+    }
+
+    if (this.subMode === 'vertex') {
+      for (let i = 0; i < pos.count; i++) {
+        if (inBox(ndcOfVert(i))) this.selVerts.add(i);
+      }
+    } else if (this.subMode === 'edge') {
+      this._edgeEntries.forEach(({ key, a, b }) => {
+        if (inBox(ndcOfVert(a)) && inBox(ndcOfVert(b))) this.selEdges.add(key);
+      });
+    } else if (this.subMode === 'face' && index) {
+      const faceCount = index.count / 3 | 0;
+      for (let fi = 0; fi < faceCount; fi++) {
+        const ai = index.getX(fi*3), bi = index.getX(fi*3+1), ci = index.getX(fi*3+2);
+        if (inBox(ndcOfVert(ai)) && inBox(ndcOfVert(bi)) && inBox(ndcOfVert(ci)))
+          this.selFaces.add(fi);
+      }
+    }
+
+    this._refresh();
+    this._updateGizmo();
+  }
+
+  // ── Keyboard ──────────────────────────────────────────────────────────────────
   _onKeyDown(e) {
-    if (e.code === 'Numpad1') { this.setSubMode('vertex'); this._syncToolbarButtons('vertex'); return; }
-    if (e.code === 'Numpad2') { this.setSubMode('edge');   this._syncToolbarButtons('edge');   return; }
-    if (e.code === 'Numpad3') { this.setSubMode('face');   this._syncToolbarButtons('face');   return; }
+    // Sub-mode shortcuts: 1/2/3  (Blender-style, no numpad dependency)
+    if (!e.ctrlKey && !e.altKey) {
+      if (e.key === '1') { this.setSubMode('vertex'); this._syncModeButtons('vertex'); return; }
+      if (e.key === '2') { this.setSubMode('edge');   this._syncModeButtons('edge');   return; }
+      if (e.key === '3') { this.setSubMode('face');   this._syncModeButtons('face');   return; }
+
+      // A — select all / deselect all (toggle)
+      if (e.key === 'a' || e.key === 'A') {
+        this._toggleSelectAll(); return;
+      }
+
+      // B — start box-select on next pointer-down
+      if ((e.key === 'b' || e.key === 'B') && !this._box.active) {
+        this._box.pending = true; return;
+      }
+
+      // G — grab: if something is selected and gizmo is attached, fake-start drag
+      // (just a UX hint; actual drag is via gizmo click)
+    }
+
+    // Ctrl+Z — undo
     if (e.ctrlKey && (e.key === 'z' || e.key === 'Z')) {
       e.stopImmediatePropagation();
       this.undo();
+      return;
+    }
+
+    // Escape — clear box-select pending / deselect
+    if (e.key === 'Escape') {
+      if (this._box.pending) { this._box.pending = false; return; }
+      this.selVerts.clear(); this.selEdges.clear(); this.selFaces.clear();
+      this._refresh(); this._hideGizmo();
     }
   }
 
-  _syncToolbarButtons(mode) {
+  _toggleSelectAll() {
+    const pos   = this.targetMesh?.geometry?.attributes?.position;
+    const index = this.targetMesh?.geometry?.index;
+    if (!pos) return;
+
+    if (this.subMode === 'vertex') {
+      if (this.selVerts.size === pos.count) { this.selVerts.clear(); }
+      else { for (let i = 0; i < pos.count; i++) this.selVerts.add(i); }
+    } else if (this.subMode === 'edge') {
+      const total = this._edgeEntries.length;
+      if (this.selEdges.size === total) { this.selEdges.clear(); }
+      else { this._edgeEntries.forEach(e => this.selEdges.add(e.key)); }
+    } else if (this.subMode === 'face' && index) {
+      const total = index.count / 3 | 0;
+      if (this.selFaces.size === total) { this.selFaces.clear(); }
+      else { for (let i = 0; i < total; i++) this.selFaces.add(i); }
+    }
+    this._refresh(); this._updateGizmo();
+  }
+
+  _syncModeButtons(mode) {
     const map = { vertex: 'msub-vert', edge: 'msub-edge', face: 'msub-face' };
-    document.querySelectorAll('#mesh-toolbar .sub-mode-btn').forEach(b => b.classList.remove('active'));
+    document.querySelectorAll('#mesh-toolbar .tool-btn')
+      .forEach(b => b.classList.remove('active'));
     document.getElementById(map[mode])?.classList.add('active');
   }
 }
