@@ -357,6 +357,9 @@ window.addEventListener('pointerup', (e) => {
 // ── Keyboard ──
 window.addEventListener('keydown', (e) => {
   if (e.ctrlKey && (e.key === 'z' || e.key === 'Z')) {
+    // Mesh mode handles its own undo via stopImmediatePropagation — this only
+    // fires when we're in object mode.
+    if (currentMode === 'mesh') return;
     const action = undoStack.pop();
     if (action) {
       if (action.type === 'add') {
