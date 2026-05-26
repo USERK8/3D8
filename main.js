@@ -6,10 +6,10 @@ import { createScene, createCamera, createRenderer, createLights, createGrid } f
 import { createControls, handleResize } from './controls.js';
 import { ObjectManager } from './objects.js';
 import { exportModel } from './export.js';
-import { setupImporter } from './import.js'; // <-- Added Importer
+import { setupImporter } from './import.js';
 
 const canvas = document.getElementById('viewport');
-const scene = createScene();
+const scene  = createScene();
 const camera = createCamera();
 const renderer = createRenderer(canvas);
 renderer.autoClear = false;
@@ -17,15 +17,15 @@ renderer.autoClear = false;
 createLights(scene);
 createGrid(scene);
 
-const orbit = createControls(camera, canvas);
+const orbit     = createControls(camera, canvas);
 const objManager = new ObjectManager(scene);
-const clock = new THREE.Clock();
+const clock     = new THREE.Clock();
 
-const undoStack = [];
-let dragStartState = null;
+const undoStack      = [];
+let   dragStartState = null;
 
 // ── Gizmo ──
-const gizmoCanvas = document.getElementById('gizmo');
+const gizmoCanvas   = document.getElementById('gizmo');
 const gizmoRenderer = new THREE.WebGLRenderer({ canvas: gizmoCanvas, alpha: true, antialias: true });
 gizmoRenderer.setSize(120, 120);
 const viewHelper = new ViewHelper(camera, gizmoCanvas);
@@ -37,7 +37,7 @@ const transformControl = new TransformControls(camera, renderer.domElement);
 scene.add(transformControl);
 
 transformControl.addEventListener('dragging-changed', (event) => {
-  orbit.enabled = !event.value;
+  // orbit is driven manually; nothing to disable here
   const mesh = transformControl.object;
   if (!mesh) return;
   if (event.value) {
@@ -75,30 +75,208 @@ document.getElementById('btn-move').onclick   = () => setTool('translate');
 document.getElementById('btn-rotate').onclick = () => setTool('rotate');
 document.getElementById('btn-scale').onclick  = () => setTool('scale');
 
-// ── Raycasting (viewport click to select) ──
-const raycaster = new THREE.Raycaster();
-const mouse = new THREE.Vector2();
-let isPointerMoved = false;
+// ════════════════════════════════════════════════════
+// SELECTION — LMB click, Shift+LMB multi-select,
+//             LMB drag = box-select
+// ════════════════════════════════════════════════════
+const raycaster  = new THREE.Raycaster();
+const mouse      = new THREE.Vector2();
 
-renderer.domElement.addEventListener('pointerdown', () => { isPointerMoved = false; });
-renderer.domElement.addEventListener('pointermove', () => { isPointerMoved = true;  });
-renderer.domElement.addEventListener('pointerup', (e) => {
-  if (e.button !== 0) return; // left click only
-  if (isPointerMoved || transformControl.dragging) return;
+// Box-select overlay
+const boxEl = document.createElement('div');
+boxEl.style.cssText = `
+  position:fixed; border:1px solid rgba(100,160,255,0.8);
+  background:rgba(100,160,255,0.08); pointer-events:none;
+  display:none; z-index:900;
+`;
+document.body.appendChild(boxEl);
 
-  mouse.x =  (e.clientX / window.innerWidth)  * 2 - 1;
-  mouse.y = -(e.clientY / window.innerHeight) * 2 + 1;
-  raycaster.setFromCamera(mouse, camera);
+let lmbDown     = false;
+let lmbStartX   = 0;
+let lmbStartY   = 0;
+let isDraggingBox = false;
+const BOX_THRESHOLD = 5; // pixels before we switch to box-select
+
+// Multi-select storage (Set of meshes)
+const multiSelected = new Set();
+
+function screenToNDC(x, y) {
+  return new THREE.Vector2(
+    ( x / window.innerWidth)  * 2 - 1,
+    -(y / window.innerHeight) * 2 + 1
+  );
+}
+
+function raycastAt(x, y) {
+  const ndc = screenToNDC(x, y);
+  raycaster.setFromCamera(ndc, camera);
   const hits = raycaster.intersectObjects(objManager.getObjects());
+  return hits.length > 0 ? hits[0].object : null;
+}
 
-  if (hits.length > 0) {
-    const obj = hits[0].object;
-    objManager.selectObject(obj);
-    if (currentTool !== 'select') { transformControl.attach(obj); transformControl.setMode(currentTool); }
-  } else {
-    objManager.selectObject(null);
-    transformControl.detach();
+/** Apply selection highlight to a mesh */
+function applyHighlight(obj) {
+  if (!obj.userData.originalColor) {
+    obj.userData.originalColor    = obj.material.color.clone();
+    if (obj.material.emissive)
+      obj.userData.originalEmissive = obj.material.emissive.clone();
   }
+  obj.material.color.set(0xff0033);
+  if (obj.material.emissive) obj.material.emissive.set(0x440011);
+}
+
+/** Remove selection highlight from a mesh */
+function removeHighlight(obj) {
+  if (obj.userData.originalColor) {
+    obj.material.color.copy(obj.userData.originalColor);
+    if (obj.material.emissive && obj.userData.originalEmissive)
+      obj.material.emissive.copy(obj.userData.originalEmissive);
+    else if (obj.material.emissive)
+      obj.material.emissive.set(0x000000);
+  }
+}
+
+/** Clear every highlighted object in multiSelected + primary selected */
+function clearAllSelections() {
+  multiSelected.forEach(o => removeHighlight(o));
+  multiSelected.clear();
+  const s = objManager.getSelected();
+  if (s) objManager.selectObject(null); // deselects and removes highlight via ObjectManager
+}
+
+/** Box-select: find all objects whose bounding sphere projects into the screen rect */
+function boxSelectObjects(x0, y0, x1, y1) {
+  const minX = Math.min(x0, x1);
+  const maxX = Math.max(x0, x1);
+  const minY = Math.min(y0, y1);
+  const maxY = Math.max(y0, y1);
+
+  const found = [];
+  objManager.getObjects().forEach(obj => {
+    // Project object's world center to screen space
+    const pos = new THREE.Vector3();
+    obj.getWorldPosition(pos);
+    pos.project(camera);
+
+    const sx = ( pos.x + 1) / 2 * window.innerWidth;
+    const sy = (-pos.y + 1) / 2 * window.innerHeight;
+
+    if (sx >= minX && sx <= maxX && sy >= minY && sy <= maxY) {
+      found.push(obj);
+    }
+  });
+  return found;
+}
+
+// ── Pointer down ──
+renderer.domElement.addEventListener('pointerdown', (e) => {
+  if (e.button !== 0) return;
+  if (transformControl.dragging) return;
+
+  lmbDown   = true;
+  lmbStartX = e.clientX;
+  lmbStartY = e.clientY;
+  isDraggingBox = false;
+});
+
+// ── Pointer move ──
+window.addEventListener('pointermove', (e) => {
+  if (!lmbDown) return;
+  if (transformControl.dragging) { lmbDown = false; return; }
+
+  const dx = e.clientX - lmbStartX;
+  const dy = e.clientY - lmbStartY;
+
+  if (!isDraggingBox && Math.sqrt(dx*dx + dy*dy) > BOX_THRESHOLD) {
+    isDraggingBox = true;
+    boxEl.style.display = 'block';
+  }
+
+  if (isDraggingBox) {
+    const l = Math.min(lmbStartX, e.clientX);
+    const t = Math.min(lmbStartY, e.clientY);
+    const w = Math.abs(dx);
+    const h = Math.abs(dy);
+    boxEl.style.left   = l + 'px';
+    boxEl.style.top    = t + 'px';
+    boxEl.style.width  = w + 'px';
+    boxEl.style.height = h + 'px';
+  }
+});
+
+// ── Pointer up ──
+window.addEventListener('pointerup', (e) => {
+  if (e.button !== 0 || !lmbDown) return;
+  lmbDown = false;
+
+  if (transformControl.dragging) return;
+
+  // ── Box select ──
+  if (isDraggingBox) {
+    isDraggingBox = false;
+    boxEl.style.display = 'none';
+
+    const found = boxSelectObjects(lmbStartX, lmbStartY, e.clientX, e.clientY);
+
+    if (!e.shiftKey) clearAllSelections();
+
+    if (found.length > 0) {
+      // Primary selection = last found
+      const primary = found[found.length - 1];
+      found.forEach(obj => {
+        multiSelected.add(obj);
+        applyHighlight(obj);
+      });
+      // Let ObjectManager track the "primary" for transform gizmo
+      objManager.selectObject(primary);
+      if (currentTool !== 'select') { transformControl.attach(primary); transformControl.setMode(currentTool); }
+    } else {
+      // Clicked empty space with box — deselect all
+      if (!e.shiftKey) {
+        objManager.selectObject(null);
+        transformControl.detach();
+      }
+    }
+    updateUI();
+    return;
+  }
+
+  // ── Single click ──
+  const hit = raycastAt(e.clientX, e.clientY);
+
+  if (e.shiftKey) {
+    // Shift+LMB: toggle object in/out of multi-selection
+    if (hit) {
+      if (multiSelected.has(hit)) {
+        // Deselect this one
+        multiSelected.delete(hit);
+        removeHighlight(hit);
+        // Update primary to last remaining, or null
+        const remaining = [...multiSelected];
+        const newPrimary = remaining[remaining.length - 1] || null;
+        objManager.selectObject(newPrimary);
+        if (newPrimary && currentTool !== 'select') { transformControl.attach(newPrimary); transformControl.setMode(currentTool); }
+        else transformControl.detach();
+      } else {
+        // Add to selection
+        multiSelected.add(hit);
+        applyHighlight(hit);
+        objManager.selectObject(hit);
+        if (currentTool !== 'select') { transformControl.attach(hit); transformControl.setMode(currentTool); }
+      }
+    }
+  } else {
+    // Plain LMB: clear multi, select single
+    clearAllSelections();
+    if (hit) {
+      objManager.selectObject(hit);
+      if (currentTool !== 'select') { transformControl.attach(hit); transformControl.setMode(currentTool); }
+    } else {
+      objManager.selectObject(null);
+      transformControl.detach();
+    }
+  }
+
   updateUI();
 });
 
@@ -125,8 +303,8 @@ window.addEventListener('keydown', (e) => {
 
   if (e.shiftKey && (e.key === 'a' || e.key === 'A')) {
     e.preventDefault();
-    addMenu.style.left = '50%';
-    addMenu.style.top  = '50%';
+    addMenu.style.left      = '50%';
+    addMenu.style.top       = '50%';
     addMenu.style.transform = 'translate(-50%, -50%)';
     addMenu.classList.add('visible');
     return;
@@ -138,7 +316,6 @@ window.addEventListener('keydown', (e) => {
     if (e.key === 's' || e.key === 'S') setTool('scale');
   }
 
-  // Shift+D to duplicate
   if (e.shiftKey && (e.key === 'd' || e.key === 'D')) {
     e.preventDefault();
     const sel = objManager.getSelected();
@@ -154,6 +331,7 @@ window.addEventListener('keydown', (e) => {
     const sel = objManager.getSelected();
     if (sel) {
       undoStack.push({ type: 'delete', mesh: sel });
+      multiSelected.delete(sel);
       objManager.deleteSelected();
       transformControl.detach();
       updateUI();
@@ -186,9 +364,9 @@ window.addEventListener('click', (e) => {
 // ════════════════════════════════════════════════
 // EXPORT MENU
 // ════════════════════════════════════════════════
-const exportMenu   = document.getElementById('export-menu');
-const btnExport    = document.getElementById('btn-export');
-let   exportScope  = 'scene'; 
+const exportMenu  = document.getElementById('export-menu');
+const btnExport   = document.getElementById('btn-export');
+let   exportScope = 'scene';
 
 function showExportMenu() {
   const rect = btnExport.getBoundingClientRect();
@@ -203,7 +381,6 @@ btnExport.addEventListener('click', (e) => {
   exportMenu.classList.contains('visible') ? hideExportMenu() : showExportMenu();
 });
 
-// Scope toggle buttons
 document.getElementById('scope-scene').addEventListener('click', () => {
   exportScope = 'scene';
   document.getElementById('scope-scene').classList.add('active');
@@ -215,15 +392,12 @@ document.getElementById('scope-selected').addEventListener('click', () => {
   document.getElementById('scope-scene').classList.remove('active');
 });
 
-// Format buttons
 exportMenu.querySelectorAll('.menu-item[data-fmt]').forEach(item => {
   item.addEventListener('click', () => {
     const fmt = item.dataset.fmt;
-
     if (exportScope === 'selected') {
       const sel = objManager.getSelected();
       if (!sel) {
-        document.querySelectorAll('.export-toast').forEach(e => e.remove());
         const el = document.createElement('div');
         el.className = 'export-toast';
         el.style.borderColor = 'rgba(255,50,50,0.4)';
@@ -246,25 +420,22 @@ window.addEventListener('mousedown', (e) => {
 });
 
 // ════════════════════════════════════════════════
-// IMPORT LOGIC (NEW)
+// IMPORT
 // ════════════════════════════════════════════════
 const triggerImport = setupImporter(objManager, updateUI);
 const btnImport = document.getElementById('btn-import');
-if (btnImport) {
-  btnImport.addEventListener('click', () => triggerImport());
-}
+if (btnImport) btnImport.addEventListener('click', () => triggerImport());
 
 // ════════════════════════════════════════════════
 // CONTEXT MENU
 // ════════════════════════════════════════════════
-const ctxMenu    = document.getElementById('context-menu');
-const ctxTitle   = document.getElementById('ctx-title');
-let ctxTarget    = null; 
+const ctxMenu  = document.getElementById('context-menu');
+const ctxTitle = document.getElementById('ctx-title');
+let   ctxTarget = null;
 
 function showContextMenu(x, y, obj) {
   ctxTarget = obj;
   ctxTitle.textContent = obj.userData.name;
-
   const menuW = 180, menuH = 130;
   ctxMenu.style.left = Math.min(x, window.innerWidth  - menuW) + 'px';
   ctxMenu.style.top  = Math.min(y, window.innerHeight - menuH) + 'px';
@@ -278,7 +449,7 @@ function hideContextMenu() {
 
 document.getElementById('ctx-rename').addEventListener('click', () => {
   if (!ctxTarget) return;
-  const target = ctxTarget; 
+  const target = ctxTarget;
   hideContextMenu();
   setTimeout(() => startInlineRename(target), 0);
 });
@@ -296,6 +467,7 @@ document.getElementById('ctx-delete').addEventListener('click', () => {
   if (!ctxTarget) return;
   undoStack.push({ type: 'delete', mesh: ctxTarget });
   const wasSelected = objManager.getSelected() === ctxTarget;
+  multiSelected.delete(ctxTarget);
   objManager.deleteObject(ctxTarget);
   if (wasSelected) transformControl.detach();
   hideContextMenu();
@@ -308,8 +480,20 @@ window.addEventListener('mousedown', (e) => {
 
 canvas.addEventListener('contextmenu', e => e.preventDefault());
 
+// Right-click on viewport → context menu for hit object
+renderer.domElement.addEventListener('contextmenu', (e) => {
+  e.preventDefault();
+  const hit = raycastAt(e.clientX, e.clientY);
+  if (hit) {
+    objManager.selectObject(hit);
+    if (currentTool !== 'select') { transformControl.attach(hit); transformControl.setMode(currentTool); }
+    updateUI();
+    showContextMenu(e.clientX, e.clientY, hit);
+  }
+});
+
 // ════════════════════════════════════════════════
-// INLINE RENAME 
+// INLINE RENAME
 // ════════════════════════════════════════════════
 function showRenameError(msg, x, y) {
   document.querySelectorAll('.rename-error').forEach(el => el.remove());
@@ -329,7 +513,7 @@ function startInlineRename(obj) {
   items.forEach(div => { if (div._meshRef === obj) targetDiv = div; });
   if (!targetDiv) return;
 
-  const rect = targetDiv.getBoundingClientRect();
+  const rect  = targetDiv.getBoundingClientRect();
   const input = document.createElement('input');
   input.className = 'rename-input';
   input.value = obj.userData.name;
@@ -344,31 +528,21 @@ function startInlineRename(obj) {
 
   function commit() {
     const err = objManager.renameObject(obj, input.value);
-    if (err) {
-      showRenameError(err, rect.left, rect.top);
-      input.focus();
-      input.select();
-      return;
-    }
+    if (err) { showRenameError(err, rect.left, rect.top); input.focus(); input.select(); return; }
     updateUI();
   }
 
   let committed = false;
-
   input.addEventListener('keydown', (e) => {
-    e.stopPropagation(); 
+    e.stopPropagation();
     if (e.key === 'Enter')  { e.preventDefault(); committed = true; commit(); }
     if (e.key === 'Escape') { committed = true; updateUI(); }
   });
-
   input.addEventListener('blur', () => {
     if (committed) return;
     committed = true;
-    if (!input.value.trim() || input.value.trim() === obj.userData.name) {
-      updateUI();
-    } else {
-      commit();
-    }
+    if (!input.value.trim() || input.value.trim() === obj.userData.name) updateUI();
+    else commit();
   });
 }
 
@@ -384,8 +558,8 @@ function updateUI() {
   objManager.getObjects().forEach(obj => {
     const div = document.createElement('div');
     div.className = 'h-item';
-    div._meshRef = obj; 
-    if (sel === obj) div.classList.add('active');
+    div._meshRef = obj;
+    if (sel === obj || multiSelected.has(obj)) div.classList.add('active');
 
     const iconMap = { sphere:'●', cylinder:'⬡', cone:'▲', torus:'◎', plane:'▬' };
     const baseName = obj.userData.name.replace(/\s*\(\d+\)$/, '');
@@ -394,14 +568,20 @@ function updateUI() {
     div.innerHTML = `<span class="ic">${icon}</span> ${obj.userData.name}`;
 
     div.addEventListener('click', (e) => {
-      objManager.selectObject(obj);
+      if (e.shiftKey) {
+        if (multiSelected.has(obj)) { multiSelected.delete(obj); removeHighlight(obj); }
+        else { multiSelected.add(obj); applyHighlight(obj); }
+        objManager.selectObject(obj);
+      } else {
+        clearAllSelections();
+        objManager.selectObject(obj);
+      }
       if (currentTool !== 'select') { transformControl.attach(obj); transformControl.setMode(currentTool); }
       updateUI();
     });
 
     div.addEventListener('contextmenu', (e) => {
-      e.preventDefault();
-      e.stopPropagation();
+      e.preventDefault(); e.stopPropagation();
       objManager.selectObject(obj);
       if (currentTool !== 'select') { transformControl.attach(obj); transformControl.setMode(currentTool); }
       updateUI();
@@ -416,21 +596,6 @@ function updateUI() {
     hListEl.appendChild(div);
   });
 }
-
-renderer.domElement.addEventListener('contextmenu', (e) => {
-  e.preventDefault();
-  mouse.x =  (e.clientX / window.innerWidth)  * 2 - 1;
-  mouse.y = -(e.clientY / window.innerHeight) * 2 + 1;
-  raycaster.setFromCamera(mouse, camera);
-  const hits = raycaster.intersectObjects(objManager.getObjects());
-  if (hits.length > 0) {
-    const obj = hits[0].object;
-    objManager.selectObject(obj);
-    if (currentTool !== 'select') { transformControl.attach(obj); transformControl.setMode(currentTool); }
-    updateUI();
-    showContextMenu(e.clientX, e.clientY, obj);
-  }
-});
 
 // ── Resize ──
 window.addEventListener('resize', () => handleResize(camera, renderer));
