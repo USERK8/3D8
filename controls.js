@@ -8,96 +8,31 @@ export function createControls(camera, canvas) {
   controls.dampingFactor      = 0.05;
   controls.screenSpacePanning = true;
   controls.enableZoom         = false;
-  controls.enableRotate       = false;
-  controls.enablePan          = false;
-  controls.mouseButtons       = {};
 
-  // ── Persistent spherical state (avoids re-deriving angles each frame) ──
-  const spherical = new THREE.Spherical();
-  // Initialise from wherever the camera currently sits
-  function syncSphericalFromCamera() {
-    const offset = camera.position.clone().sub(controls.target);
-    spherical.setFromVector3(offset);
-  }
-  syncSphericalFromCamera();
+  // MMB = rotate (what LMB normally does in OrbitControls)
+  // Shift+MMB = pan   (what MMB/RMB normally does)
+  // LMB = nothing (freed up for selection in main.js)
+  controls.mouseButtons = {
+    MIDDLE: THREE.MOUSE.ROTATE,
+  };
 
-  // ── State ──
-  let isMMBDown   = false;
-  let isShiftDown = false;
-  let lastX = 0, lastY = 0;
-
-  window.addEventListener('keydown', e => { if (e.key === 'Shift') isShiftDown = true;  });
-  window.addEventListener('keyup',   e => { if (e.key === 'Shift') isShiftDown = false; });
-
+  // Shift+MMB → pan: OrbitControls handles this natively when
+  // we set the pan button to MIDDLE and check e.shiftKey.
+  // Easiest way: swap MIDDLE to PAN when Shift is held.
   canvas.addEventListener('mousedown', e => {
     if (e.button !== 1) return;
-    e.preventDefault();
-    syncSphericalFromCamera(); // re-sync at the start of each drag
-    isMMBDown = true;
-    lastX = e.clientX;
-    lastY = e.clientY;
-  });
-
-  window.addEventListener('mouseup', e => {
-    if (e.button === 1) isMMBDown = false;
-  });
-
-  window.addEventListener('mousemove', e => {
-    if (!isMMBDown) return;
-
-    const dx = e.clientX - lastX;
-    const dy = e.clientY - lastY;
-    lastX = e.clientX;
-    lastY = e.clientY;
-
-    if (isShiftDown) {
-      // ── Shift+MMB → Pan ──
-      const distance = camera.position.distanceTo(controls.target);
-      const panSpeed  = distance * 0.001;
-
-      const right = new THREE.Vector3();
-      const up    = new THREE.Vector3();
-      right.setFromMatrixColumn(camera.matrix, 0);
-      up.setFromMatrixColumn(camera.matrix, 1);
-
-      controls.target.addScaledVector(right, -dx * panSpeed);
-      controls.target.addScaledVector(up,     dy * panSpeed);
-      camera.position.addScaledVector(right, -dx * panSpeed);
-      camera.position.addScaledVector(up,     dy * panSpeed);
-
-      // After panning the target moved, re-sync so next rotate is correct
-      syncSphericalFromCamera();
+    if (e.shiftKey) {
+      controls.mouseButtons = { MIDDLE: THREE.MOUSE.PAN };
     } else {
-      // ── MMB → Orbit (no polar clamp — full 360° on both axes) ──
-      const rotateSpeed = 0.005;
-
-      spherical.theta -= dx * rotateSpeed; // horizontal drag = azimuth
-      spherical.phi   -= dy * rotateSpeed; // vertical drag   = polar
-
-      // Wrap theta freely — no limit
-      // Allow phi to go past poles (full rotation, no clamp)
-      // Just keep radius sane
-      spherical.radius = Math.max(0.001, spherical.radius);
-      spherical.makeSafe(); // only fixes NaN/Infinity, doesn't clamp angles
-
-      // Manually apply because makeSafe clamps phi to (EPS, PI-EPS);
-      // we want unclamped so we write the offset directly:
-      const sinPhi = Math.sin(spherical.phi);
-      const cosPhi = Math.cos(spherical.phi);
-      const offset = new THREE.Vector3(
-        spherical.radius * sinPhi * Math.sin(spherical.theta),
-        spherical.radius * cosPhi,
-        spherical.radius * sinPhi * Math.cos(spherical.theta)
-      );
-
-      camera.position.copy(controls.target).add(offset);
-      camera.lookAt(controls.target);
+      controls.mouseButtons = { MIDDLE: THREE.MOUSE.ROTATE };
     }
-
-    controls.update();
   });
 
-  // ── Scroll → Zoom (no limits) ──
+  // No polar angle limits — full rotation
+  controls.minPolarAngle = 0;
+  controls.maxPolarAngle = Math.PI;
+
+  // ── Scroll → Zoom (no distance limits) ──
   const ZOOM_FACTOR = 1.1;
 
   canvas.addEventListener('wheel', (e) => {
@@ -111,9 +46,6 @@ export function createControls(camera, canvas) {
 
     const direction = camera.position.clone().sub(controls.target).normalize();
     camera.position.copy(controls.target).add(direction.multiplyScalar(newDistance));
-
-    // Keep spherical radius in sync after zoom
-    spherical.radius = newDistance;
 
     controls.update();
     camera.updateProjectionMatrix();
