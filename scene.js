@@ -38,7 +38,7 @@ export function createLights(scene) {
 
 export function createGrid(scene) {
   const size = 300;
-  const divisions = 300;
+  const divisions = 30;
   
   // Subtle dark grid
   const gridHelper = new THREE.GridHelper(size, divisions, 0x444466, 0x222233);
