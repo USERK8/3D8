@@ -73,23 +73,38 @@ export class MeshEditor {
     this._gizmo = new TransformControls(camera, renderer.domElement);
     this._gizmo.setMode('translate');
     this._gizmo.setSize(GIZMO_SIZE);
+    this._gizmo.translationSnap = null;  // free movement, no grid snap (Blender-style)
+    this._gizmo.rotationSnap    = null;
+    this._gizmo.scaleSnap       = null;
     scene.add(this._gizmo);
+
+    this._isDragging = false;
 
     this._gizmo.addEventListener('mouseDown', () => {
       this.orbit.enabled = false;
+      this._isDragging = true;
       this._saveSnap();
       this._dragBase.copy(this._proxy.position);
     });
 
     this._gizmo.addEventListener('change', () => {
-      if (!this._gizmo.dragging) return;
+      if (!this._isDragging) return;
       this._applyTotalDelta();
     });
 
     this._gizmo.addEventListener('mouseUp', () => {
       this.orbit.enabled = true;
+      this._isDragging = false;
       this._commitSnap();
-      this._reanchorGizmo();
+      // Re-anchor to new centroid after drag — reposition proxy without resetting it mid-drag
+      const c = this._centroid();
+      if (c) {
+        this._proxy.position.copy(c);
+        this._dragBase.copy(c);
+        this._gizmo.attach(this._proxy);
+      } else {
+        this._hideGizmo();
+      }
     });
 
     this._box = { active: false, pending: false, start: null, end: null, div: null };
