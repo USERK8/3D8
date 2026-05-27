@@ -1,3 +1,4 @@
+import * as THREE from 'three';
 /**
  * MeshData — pure data layer.
  *
@@ -27,6 +28,7 @@ export class MeshData {
     // Topology (rebuilt lazily when geometry changes)
     this.edgeMap    = new Map(); // edgeKey → { a, b, faceCount, faces[] }
     this.faceCount  = 0;
+    this.quadGroups = [];        // logical face groups (quads) for face mode
     this._isQuadDiag = null;     // (edgeEntry) => bool, set during buildTopology
 
     // Snap (undo managed externally by History)
@@ -93,6 +95,10 @@ export class MeshData {
       return Math.abs(n.x * dd.x + n.y * dd.y + n.z * dd.z) < 0.002;
     };
 
+    // Build logical quad groups for face selection
+    this.quadGroups = buildQuadGroups(this.geo);
+    this.faceCount  = this.quadGroups.length;  // expose quad count, not tri count
+
     this.dirty.topology = false;
   }
 
@@ -151,8 +157,8 @@ export class MeshData {
         .map(([k]) => k);
       if (this.selEdges.size === visibleEdges.length) this.selEdges.clear();
       else visibleEdges.forEach(k => this.selEdges.add(k));
-    } else if (this.subMode === 'face' && index) {
-      const total = this.faceCount;
+    } else if (this.subMode === 'face') {
+      const total = this.quadGroups.length;
       if (this.selFaces.size === total) this.selFaces.clear();
       else for (let i = 0; i < total; i++) this.selFaces.add(i);
     }
@@ -170,11 +176,9 @@ export class MeshData {
         const [a, b] = k.split('_').map(Number);
         out.add(a); out.add(b);
       });
-    } else if (this.subMode === 'face' && index) {
-      this.selFaces.forEach(fi => {
-        out.add(index.getX(fi * 3));
-        out.add(index.getX(fi * 3 + 1));
-        out.add(index.getX(fi * 3 + 2));
+    } else if (this.subMode === 'face') {
+      this.selFaces.forEach(gi => {
+        if (this.quadGroups[gi]) this.quadGroups[gi].verts.forEach(vi => out.add(vi));
       });
     }
     return out;
@@ -347,4 +351,171 @@ function applyMat4raw(x, y, z, m) {
     y: (e[1] * x + e[5] * y + e[9]  * z + e[13]) * w,
     z: (e[2] * x + e[6] * y + e[10] * z + e[14]) * w,
   };
+}
+
+// ── Quad grouping ─────────────────────────────────────────────────────────
+// Groups coplanar adjacent triangle pairs into logical "quads" for face mode.
+// Returns array of { tris: [fi, ...], verts: [vi, ...], normal: {x,y,z} }
+// Each group is what the user sees and selects as one face.
+export function buildQuadGroups(geo) {
+  const pos   = geo.attributes.position;
+  const index = geo.index;
+  if (!index) return [];
+
+  const fc = index.count / 3 | 0;
+
+  // Compute per-triangle normal
+  const triNormal = (fi) => {
+    const a = index.getX(fi*3), b = index.getX(fi*3+1), c = index.getX(fi*3+2);
+    const ax = pos.getX(a), ay = pos.getY(a), az = pos.getZ(a);
+    const bx = pos.getX(b) - ax, by = pos.getY(b) - ay, bz = pos.getZ(b) - az;
+    const cx = pos.getX(c) - ax, cy = pos.getY(c) - ay, cz = pos.getZ(c) - az;
+    const nx = by*cz - bz*cy, ny = bz*cx - bx*cz, nz = bx*cy - by*cx;
+    const len = Math.hypot(nx, ny, nz) || 1;
+    return { x: nx/len, y: ny/len, z: nz/len };
+  };
+
+  // Edge → triangles map
+  const edgeTris = new Map();
+  for (let fi = 0; fi < fc; fi++) {
+    for (let j = 0; j < 3; j++) {
+      const a = index.getX(fi*3+j), b = index.getX(fi*3+(j+1)%3);
+      const k = a < b ? `${a}_${b}` : `${b}_${a}`;
+      if (!edgeTris.has(k)) edgeTris.set(k, []);
+      edgeTris.get(k).push(fi);
+    }
+  }
+
+  // Union-Find for coplanar triangle merging
+  const parent = Array.from({length: fc}, (_, i) => i);
+  const find = i => { while (parent[i] !== i) { parent[i] = parent[parent[i]]; i = parent[i]; } return i; };
+  const union = (a, b) => { parent[find(a)] = find(b); };
+
+  const normals = Array.from({length: fc}, (_, i) => triNormal(i));
+  const COPLANAR = 0.9998; // ~1 degree tolerance
+
+  edgeTris.forEach(tris => {
+    if (tris.length !== 2) return;
+    const [fa, fb] = tris;
+    const na = normals[fa], nb = normals[fb];
+    const dot = na.x*nb.x + na.y*nb.y + na.z*nb.z;
+    if (Math.abs(dot) > COPLANAR) union(fa, fb);
+  });
+
+  // Group triangles by root
+  const groups = new Map();
+  for (let fi = 0; fi < fc; fi++) {
+    const r = find(fi);
+    if (!groups.has(r)) groups.set(r, []);
+    groups.get(r).push(fi);
+  }
+
+  return [...groups.values()].map(tris => {
+    const verts = [...new Set(tris.flatMap(fi => [
+      index.getX(fi*3), index.getX(fi*3+1), index.getX(fi*3+2)
+    ]))];
+    const n = normals[tris[0]];
+    return { tris, verts, normal: n };
+  });
+}
+
+// ── Extrude faces ─────────────────────────────────────────────────────────
+// Takes a THREE.BufferGeometry and a set of logical face group indices,
+// duplicates their vertices, pushes them along the group normal,
+// and stitches side quads. Returns a new geometry.
+export function extrudeFaces(geo, selectedGroups, quadGroups, distance = 0) {
+  const oldPos   = geo.attributes.position;
+  const oldIndex = geo.index;
+  if (!oldIndex) return geo;
+
+  const fc = oldIndex.count / 3 | 0;
+
+  // Collect all triangle indices that belong to selected groups
+  const selTris = new Set();
+  selectedGroups.forEach(gi => quadGroups[gi].tris.forEach(fi => selTris.add(fi)));
+
+  // Collect all unique vertex indices used by selected faces
+  const selVerts = new Set();
+  selTris.forEach(fi => {
+    selVerts.add(oldIndex.getX(fi*3));
+    selVerts.add(oldIndex.getX(fi*3+1));
+    selVerts.add(oldIndex.getX(fi*3+2));
+  });
+
+  // Compute average extrude normal from selected groups
+  let nx = 0, ny = 0, nz = 0;
+  selectedGroups.forEach(gi => {
+    const n = quadGroups[gi].normal;
+    nx += n.x; ny += n.y; nz += n.z;
+  });
+  const nlen = Math.hypot(nx, ny, nz) || 1;
+  nx /= nlen; ny /= nlen; nz /= nlen;
+
+  // Build new position array:
+  // [0..oldCount-1] = original verts
+  // [oldCount..] = duplicated selected verts pushed by distance
+  const oldCount  = oldPos.count;
+  const newCount  = oldCount + selVerts.size;
+  const newPosArr = new Float32Array(newCount * 3);
+
+  // Copy original
+  for (let i = 0; i < oldCount * 3; i++) newPosArr[i] = oldPos.array[i];
+
+  // Duplicate selected verts, shifted along normal
+  const oldToNew = new Map(); // old vi → new vi
+  let insertIdx  = oldCount;
+  selVerts.forEach(vi => {
+    oldToNew.set(vi, insertIdx);
+    newPosArr[insertIdx*3]   = oldPos.getX(vi) + nx * distance;
+    newPosArr[insertIdx*3+1] = oldPos.getY(vi) + ny * distance;
+    newPosArr[insertIdx*3+2] = oldPos.getZ(vi) + nz * distance;
+    insertIdx++;
+  });
+
+  // Build new index array:
+  // • Non-selected faces: unchanged
+  // • Selected faces: remap to new (extruded) verts
+  // • Side walls: for each boundary edge of selection, add two triangles
+  const newTriangles = [];
+
+  for (let fi = 0; fi < fc; fi++) {
+    const a = oldIndex.getX(fi*3), b = oldIndex.getX(fi*3+1), c = oldIndex.getX(fi*3+2);
+    if (selTris.has(fi)) {
+      // Top face — use new extruded verts
+      newTriangles.push(oldToNew.get(a), oldToNew.get(b), oldToNew.get(c));
+    } else {
+      newTriangles.push(a, b, c);
+    }
+  }
+
+  // Side walls: find boundary edges (edges where one tri is selected, other is not)
+  const edgeMap = new Map();
+  for (let fi = 0; fi < fc; fi++) {
+    for (let j = 0; j < 3; j++) {
+      const a = oldIndex.getX(fi*3+j), b = oldIndex.getX(fi*3+(j+1)%3);
+      const k = a < b ? `${a}_${b}` : `${b}_${a}`;
+      if (!edgeMap.has(k)) edgeMap.set(k, { a, b, tris: [] });
+      edgeMap.get(k).tris.push(fi);
+    }
+  }
+
+  edgeMap.forEach(({ a, b, tris }) => {
+    const hasSel   = tris.some(fi => selTris.has(fi));
+    const hasUnsel = tris.some(fi => !selTris.has(fi));
+    if (!hasSel || !hasUnsel) return; // not a boundary edge
+    // Stitch: bottom edge a-b (original) → top edge newA-newB (extruded)
+    const na2 = oldToNew.get(a), nb2 = oldToNew.get(b);
+    if (na2 === undefined || nb2 === undefined) return;
+    // Two triangles forming a quad wall
+    newTriangles.push(a, b, na2);
+    newTriangles.push(b, nb2, na2);
+  });
+
+  // Build new geometry
+  const newGeo = geo.clone();
+  const newPosAttr = new THREE.Float32BufferAttribute(newPosArr, 3);
+  newGeo.setAttribute('position', newPosAttr);
+  newGeo.setIndex(newTriangles);
+  newGeo.computeVertexNormals();
+  return newGeo;
 }
