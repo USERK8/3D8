@@ -149,10 +149,10 @@ export class ObjectManager {
          }
       }
       
-      // Make it glow Dark Neon Red
-      this.selected.material.color.set(0xff0033);
+      // Subtle bright-white selection tint (visible but not red)
+      this.selected.material.color.set(0xeeeeee);
       if (this.selected.material.emissive) {
-          this.selected.material.emissive.set(0x440011);
+          this.selected.material.emissive.set(0x111111);
       }
     }
   }
