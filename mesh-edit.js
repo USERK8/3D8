@@ -581,40 +581,32 @@ export class MeshEditor {
     const d   = this._data;
     const geo = d.geo;
 
-    // Snapshot geometry before extrude for undo
-    this._extrudeGeoOld = new Float32Array(d.pos.array);
-    const oldIndex = new Uint32Array(geo.index.array);
+    // Remember old vert count so we can identify cap verts after extrude
+    const oldVertCount = d.pos.count;
 
-    // Build new geometry with extrusion at distance=0
+    // Build new geometry with extrusion at distance=0 (cap sits flush on base)
     const newGeo = extrudeFaces(geo, [...d.selFaces], d.quadGroups, 0);
 
-    // Swap geometry on the mesh
+    // Swap geometry buffers onto the live mesh geometry
     geo.setAttribute('position', newGeo.attributes.position);
     geo.setIndex(newGeo.index);
     geo.computeVertexNormals();
 
-    // Refresh MeshData with new geometry refs
-    d.pos   = geo.attributes.position;
-    d.geo   = geo;
+    // Refresh MeshData refs to point at the new buffers
+    d.pos = geo.attributes.position;
+    d.geo = geo;
 
-    // Rebuild topology on the new geometry
-    d.dirty.topology = true;
+    // Rebuild topology so quad groups reflect the new index buffer
     d.rebuildTopology();
 
-    // The extruded cap verts are the new ones at the end of the buffer
-    // They map to the same quad groups but at new indices — reselect them
-    // by selecting the last N quad groups (the extruded cap)
-    // Actually: after extrude, the top faces become the last faceCount groups.
-    // Simplest: select all faces whose centroid moved (i.e. all new top faces).
-    // For now, re-select by matching normal direction of old selection.
-    const selNormals = [...d.selFaces].map(gi => d.quadGroups[gi]?.normal).filter(Boolean);
+    // Select the cap faces — these are the quad groups whose verts are ALL
+    // in the new range [oldVertCount .. newVertCount-1] (the duplicated cap verts).
     d.selFaces.clear();
     d.quadGroups.forEach((group, gi) => {
-      const n = group.normal;
-      const matches = selNormals.some(sn =>
-        Math.abs(sn.x*n.x + sn.y*n.y + sn.z*n.z) > 0.999
-      );
-      if (matches) d.selFaces.add(gi);
+      // A cap face is one where every vert index >= oldVertCount
+      if (group.verts.every(vi => vi >= oldVertCount)) {
+        d.selFaces.add(gi);
+      }
     });
 
     d.dirty.topology  = true;
@@ -623,12 +615,7 @@ export class MeshEditor {
     this._renderer.update(d);
     this._updateGizmo();
 
-    // Push to history
-    const snapBefore = this._extrudeGeoOld;
-    const snapAfter  = new Float32Array(d.pos.array);
-    this._history.push({ type: 'mesh-edit', mesh: d.mesh, snapBefore, snapAfter });
-
-    this._showToast('Extrude — drag gizmo to set depth');
+    this._showToast('Extrude — drag gizmo to pull out');
     this._extruding = false;
   }
 
