@@ -8,7 +8,7 @@ import { ObjectManager } from './objects.js';
 import { exportModel } from './export.js';
 import { setupImporter } from './import.js';
 import { MeshEditor } from './mesh-edit.js';
-import { History }    from './history.js';
+import { History } from './history.js';
 
 const canvas = document.getElementById('viewport');
 const scene  = createScene();
@@ -22,9 +22,9 @@ createGrid(scene);
 const orbit     = createControls(camera, canvas);
 const objManager = new ObjectManager(scene);
 const clock     = new THREE.Clock();
-const meshEditor = new MeshEditor(scene, camera, renderer, orbit, history);
+const meshEditor = new MeshEditor(scene, camera, renderer, orbit, appHistory);
 
-const history        = new History();
+const appHistory = new History();
 let   dragStartState = null;
 
 // ── Gizmo ──
@@ -46,7 +46,7 @@ transformControl.addEventListener('dragging-changed', (event) => {
     dragStartState = { pos: mesh.position.clone(), rot: mesh.rotation.clone(), scale: mesh.scale.clone() };
   } else if (dragStartState) {
     const newState = { pos: mesh.position.clone(), rot: mesh.rotation.clone(), scale: mesh.scale.clone() };
-    history.push({ type: 'transform', mesh, oldState: dragStartState, newState });
+    appHistory.push({ type: 'transform', mesh, oldState: dragStartState, newState });
     dragStartState = null;
   }
 });
@@ -351,14 +351,14 @@ window.addEventListener('keydown', (e) => {
   if (e.ctrlKey && (e.key === 'z' || e.key === 'Z') && !e.shiftKey) {
     e.preventDefault();
     e.stopImmediatePropagation();
-    history.undo(historyHandlers);
+    appHistory.undo(historyHandlers);
     return;
   }
 
   if (e.ctrlKey && e.shiftKey && (e.key === 'z' || e.key === 'Z')) {
     e.preventDefault();
     e.stopImmediatePropagation();
-    history.redo(historyHandlers);
+    appHistory.redo(historyHandlers);
     return;
   }
 
@@ -382,7 +382,7 @@ window.addEventListener('keydown', (e) => {
     const sel = objManager.getSelected();
     if (sel) {
       const dupe = objManager.duplicateObject(sel);
-      history.push({ type: 'add', mesh: dupe });
+      appHistory.push({ type: 'add', mesh: dupe });
       if (currentTool !== 'select') { transformControl.attach(dupe); transformControl.setMode(currentTool); }
       updateUI();
     }
@@ -392,7 +392,7 @@ window.addEventListener('keydown', (e) => {
     if (currentMode === 'mesh') return;
     const sel = objManager.getSelected();
     if (sel) {
-      history.push({ type: 'delete', mesh: sel });
+      appHistory.push({ type: 'delete', mesh: sel });
       multiSelected.delete(sel);
       objManager.deleteSelected();
       transformControl.detach();
@@ -410,7 +410,7 @@ window.addEventListener('keydown', (e) => {
 document.querySelectorAll('.menu-item').forEach(item => {
   item.addEventListener('click', (e) => {
     const newMesh = objManager.addObject(e.currentTarget.dataset.type);
-    history.push({ type: 'add', mesh: newMesh });
+    appHistory.push({ type: 'add', mesh: newMesh });
     if (currentTool !== 'select') { transformControl.attach(newMesh); transformControl.setMode(currentTool); }
     addMenu.classList.remove('visible');
     updateUI();
@@ -518,7 +518,7 @@ document.getElementById('ctx-rename').addEventListener('click', () => {
 document.getElementById('ctx-duplicate').addEventListener('click', () => {
   if (!ctxTarget) return;
   const dupe = objManager.duplicateObject(ctxTarget);
-  history.push({ type: 'add', mesh: dupe });
+  appHistory.push({ type: 'add', mesh: dupe });
   if (currentTool !== 'select') { transformControl.attach(dupe); transformControl.setMode(currentTool); }
   hideContextMenu();
   updateUI();
@@ -526,7 +526,7 @@ document.getElementById('ctx-duplicate').addEventListener('click', () => {
 
 document.getElementById('ctx-delete').addEventListener('click', () => {
   if (!ctxTarget) return;
-  history.push({ type: 'delete', mesh: ctxTarget });
+  appHistory.push({ type: 'delete', mesh: ctxTarget });
   const wasSelected = objManager.getSelected() === ctxTarget;
   multiSelected.delete(ctxTarget);
   objManager.deleteObject(ctxTarget);
