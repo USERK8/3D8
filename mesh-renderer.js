@@ -246,19 +246,23 @@ export class MeshRenderer {
     // Edge cylinders: only if in edge mode + something selected
     if (subMode === 'edge' && selEdges.size > 0) this._rebuildEdgeCylinders(data);
 
-    // Face overlays: update position attributes in-place
-    if (subMode === 'face' && index) {
-      const allFace = [...this._faceMeshes, ...this._faceHitMeshes];
-      allFace.forEach(fm => {
-        const fi   = fm.userData.faceIndex;
-        const ai   = index.getX(fi * 3), bi = index.getX(fi * 3 + 1), ci = index.getX(fi * 3 + 2);
-        const va   = data.vertWorldPos(ai);
-        const vb   = data.vertWorldPos(bi);
-        const vc   = data.vertWorldPos(ci);
-        const attr = fm.geometry.attributes.position;
-        attr.setXYZ(0, va.x, va.y, va.z);
-        attr.setXYZ(1, vb.x, vb.y, vb.z);
-        attr.setXYZ(2, vc.x, vc.y, vc.z);
+    // Face overlays: update all position attrs in-place per quad group
+    if (subMode === 'face' && data.quadGroups.length) {
+      [...this._faceMeshes, ...this._faceHitMeshes].forEach(fm => {
+        const gi    = fm.userData.faceIndex;
+        const group = data.quadGroups[gi];
+        if (!group) return;
+        const attr  = fm.geometry.attributes.position;
+        const viMap = new Map();
+        group.tris.forEach(fi => {
+          [0,1,2].forEach(j => {
+            const vi = index.getX(fi*3+j);
+            if (!viMap.has(vi)) { viMap.set(vi, viMap.size); }
+            const slot = viMap.get(vi);
+            const wp   = data.vertWorldPos(vi);
+            attr.setXYZ(slot, wp.x, wp.y, wp.z);
+          });
+        });
         attr.needsUpdate = true;
         fm.geometry.computeBoundingSphere();
       });
