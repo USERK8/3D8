@@ -29,9 +29,8 @@ export class MeshData {
     this.faceCount  = 0;
     this._isQuadDiag = null;     // (edgeEntry) => bool, set during buildTopology
 
-    // Undo
-    this._undoStack = [];
-    this._preSnap   = null;      // snapshot taken at drag-start
+    // Snap (undo managed externally by History)
+    this._preSnap = null;  // Float32Array snapshot taken at drag-start
 
     // Dirty flags — render layer checks these every frame, clears after consuming
     this.dirty = {
@@ -183,34 +182,34 @@ export class MeshData {
 
   // ─────────────────────────────────────────────────────── undo / snap ──
 
+  // Take a snapshot of the current position buffer (call before any drag/mutation)
   saveSnap() {
-    const pos = this.pos;
-    this._preSnap = new Float32Array(pos.array); // raw copy — fast, no object alloc
+    this._preSnap = new Float32Array(this.pos.array);
   }
 
-  commitSnap() {
-    if (this._preSnap) {
-      this._undoStack.push(this._preSnap);
-      this._preSnap = null;
-    }
+  // Returns { snapBefore, snapAfter } for pushing to History, then clears _preSnap.
+  // Returns null if no snap was saved.
+  takeSnap() {
+    if (!this._preSnap) return null;
+    const before = this._preSnap;
+    const after  = new Float32Array(this.pos.array);
+    this._preSnap = null;
+    return { snapBefore: before, snapAfter: after };
   }
 
   discardSnap() {
     this._preSnap = null;
   }
 
-  undo() {
-    if (!this._undoStack.length) return false;
-    const snap = this._undoStack.pop();
-    const pos  = this.pos;
-    // Raw Float32Array restore — fastest possible
-    for (let i = 0; i < snap.length; i++) pos.array[i] = snap[i];
+  // Restore geometry from a raw Float32Array snapshot (called by History)
+  restoreSnap(snap) {
+    const pos = this.pos;
+    pos.array.set(snap);
     pos.needsUpdate = true;
     this.geo.computeVertexNormals();
     this.dirty.positions = true;
     this.dirty.selection = true;
     this.rebuildTopology();
-    return true;
   }
 
   // ─────────────────────────────────────────────────────── mutations ──
