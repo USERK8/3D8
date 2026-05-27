@@ -39,7 +39,6 @@ const transformControl = new TransformControls(camera, renderer.domElement);
 scene.add(transformControl);
 
 transformControl.addEventListener('dragging-changed', (event) => {
-  // orbit is driven manually; nothing to disable here
   const mesh = transformControl.object;
   if (!mesh) return;
   if (event.value) {
@@ -78,9 +77,9 @@ document.getElementById('btn-rotate').onclick = () => setTool('rotate');
 document.getElementById('btn-scale').onclick  = () => setTool('scale');
 
 // ════════════════════════════════════════════════
-// MODE SWITCHING  (Object ↔ Mesh)
+// MODE SWITCHING  (Layout ↔ Mesh)
 // ════════════════════════════════════════════════
-let currentMode = 'object'; // 'object' | 'mesh'
+let currentMode = 'object';
 
 const toolbar      = document.getElementById('toolbar');
 const meshToolbar  = document.getElementById('mesh-toolbar');
@@ -100,7 +99,6 @@ function enterObjectMode() {
 function enterMeshMode() {
   const sel = objManager.getSelected();
   if (!sel) {
-    // Flash a toast — need a selected object first
     const el = document.createElement('div');
     el.className = 'export-toast';
     el.style.borderColor = 'rgba(255,50,50,0.4)';
@@ -116,7 +114,7 @@ function enterMeshMode() {
   toolbar.style.display = 'none';
   meshToolbar.style.display = 'flex';
   transformControl.detach();
-  meshEditor.enter(sel); // always resets to vertex inside
+  meshEditor.enter(sel);
   setMeshSubMode('vertex');
   updateUI();
 }
@@ -124,7 +122,7 @@ function enterMeshMode() {
 modeBtnObj.addEventListener('click', enterObjectMode);
 modeBtnMesh.addEventListener('click', enterMeshMode);
 
-// Tab key to toggle modes (like Blender)
+// Tab toggles between Layout and Mesh mode
 window.addEventListener('keydown', e => {
   if (e.key === 'Tab') {
     e.preventDefault();
@@ -154,7 +152,6 @@ msubFace.addEventListener('click', () => setMeshSubMode('face'));
 const raycaster  = new THREE.Raycaster();
 const mouse      = new THREE.Vector2();
 
-// Box-select overlay
 const boxEl = document.createElement('div');
 boxEl.style.cssText = `
   position:fixed; border:1px solid rgba(100,160,255,0.8);
@@ -163,13 +160,12 @@ boxEl.style.cssText = `
 `;
 document.body.appendChild(boxEl);
 
-let lmbDown     = false;
-let lmbStartX   = 0;
-let lmbStartY   = 0;
+let lmbDown       = false;
+let lmbStartX     = 0;
+let lmbStartY     = 0;
 let isDraggingBox = false;
-const BOX_THRESHOLD = 5; // pixels before we switch to box-select
+const BOX_THRESHOLD = 5;
 
-// Multi-select storage (Set of meshes)
 const multiSelected = new Set();
 
 function screenToNDC(x, y) {
@@ -186,7 +182,6 @@ function raycastAt(x, y) {
   return hits.length > 0 ? hits[0].object : null;
 }
 
-/** Apply selection highlight to a mesh */
 function applyHighlight(obj) {
   if (!obj.userData.originalColor) {
     obj.userData.originalColor    = obj.material.color.clone();
@@ -197,7 +192,6 @@ function applyHighlight(obj) {
   if (obj.material.emissive) obj.material.emissive.set(0x440011);
 }
 
-/** Remove selection highlight from a mesh */
 function removeHighlight(obj) {
   if (obj.userData.originalColor) {
     obj.material.color.copy(obj.userData.originalColor);
@@ -208,132 +202,92 @@ function removeHighlight(obj) {
   }
 }
 
-/** Clear every highlighted object in multiSelected + primary selected */
 function clearAllSelections() {
   multiSelected.forEach(o => removeHighlight(o));
   multiSelected.clear();
   const s = objManager.getSelected();
-  if (s) objManager.selectObject(null); // deselects and removes highlight via ObjectManager
+  if (s) objManager.selectObject(null);
 }
 
-/** Box-select: find all objects whose bounding sphere projects into the screen rect */
 function boxSelectObjects(x0, y0, x1, y1) {
-  const minX = Math.min(x0, x1);
-  const maxX = Math.max(x0, x1);
-  const minY = Math.min(y0, y1);
-  const maxY = Math.max(y0, y1);
-
+  const minX = Math.min(x0, x1), maxX = Math.max(x0, x1);
+  const minY = Math.min(y0, y1), maxY = Math.max(y0, y1);
   const found = [];
   objManager.getObjects().forEach(obj => {
-    // Project object's world center to screen space
     const pos = new THREE.Vector3();
     obj.getWorldPosition(pos);
     pos.project(camera);
-
     const sx = ( pos.x + 1) / 2 * window.innerWidth;
     const sy = (-pos.y + 1) / 2 * window.innerHeight;
-
-    if (sx >= minX && sx <= maxX && sy >= minY && sy <= maxY) {
-      found.push(obj);
-    }
+    if (sx >= minX && sx <= maxX && sy >= minY && sy <= maxY) found.push(obj);
   });
   return found;
 }
 
-// ── Pointer down ──
 renderer.domElement.addEventListener('pointerdown', (e) => {
   if (e.button !== 0) return;
   if (transformControl.dragging) return;
-  if (currentMode === 'mesh') return; // mesh editor handles its own pointerdown
-
+  if (currentMode === 'mesh') return;
   lmbDown   = true;
   lmbStartX = e.clientX;
   lmbStartY = e.clientY;
   isDraggingBox = false;
 });
 
-// ── Pointer move ──
 window.addEventListener('pointermove', (e) => {
   if (!lmbDown) return;
   if (transformControl.dragging) { lmbDown = false; return; }
-
   const dx = e.clientX - lmbStartX;
   const dy = e.clientY - lmbStartY;
-
   if (!isDraggingBox && Math.sqrt(dx*dx + dy*dy) > BOX_THRESHOLD) {
     isDraggingBox = true;
     boxEl.style.display = 'block';
   }
-
   if (isDraggingBox) {
-    const l = Math.min(lmbStartX, e.clientX);
-    const t = Math.min(lmbStartY, e.clientY);
-    const w = Math.abs(dx);
-    const h = Math.abs(dy);
-    boxEl.style.left   = l + 'px';
-    boxEl.style.top    = t + 'px';
-    boxEl.style.width  = w + 'px';
-    boxEl.style.height = h + 'px';
+    boxEl.style.left   = Math.min(lmbStartX, e.clientX) + 'px';
+    boxEl.style.top    = Math.min(lmbStartY, e.clientY) + 'px';
+    boxEl.style.width  = Math.abs(dx) + 'px';
+    boxEl.style.height = Math.abs(dy) + 'px';
   }
 });
 
-// ── Pointer up ──
 window.addEventListener('pointerup', (e) => {
   if (e.button !== 0 || !lmbDown) return;
   lmbDown = false;
-
   if (transformControl.dragging) return;
 
-  // ── Box select ──
   if (isDraggingBox) {
     isDraggingBox = false;
     boxEl.style.display = 'none';
     if (currentMode === 'mesh') return;
-
     const found = boxSelectObjects(lmbStartX, lmbStartY, e.clientX, e.clientY);
-
     if (!e.shiftKey) clearAllSelections();
-
     if (found.length > 0) {
-      // Primary selection = last found
       const primary = found[found.length - 1];
-      found.forEach(obj => {
-        multiSelected.add(obj);
-        applyHighlight(obj);
-      });
-      // Let ObjectManager track the "primary" for transform gizmo
+      found.forEach(obj => { multiSelected.add(obj); applyHighlight(obj); });
       objManager.selectObject(primary);
       if (currentTool !== 'select') { transformControl.attach(primary); transformControl.setMode(currentTool); }
     } else {
-      // Clicked empty space with box — deselect all
-      if (!e.shiftKey) {
-        objManager.selectObject(null);
-        transformControl.detach();
-      }
+      if (!e.shiftKey) { objManager.selectObject(null); transformControl.detach(); }
     }
     updateUI();
     return;
   }
 
-  // ── Single click ──
-  if (currentMode === 'mesh') return; // mesh editor handles its own clicks
+  if (currentMode === 'mesh') return;
   const hit = raycastAt(e.clientX, e.clientY);
 
   if (e.shiftKey) {
-    // Shift+LMB: toggle object in/out of multi-selection
     if (hit) {
       if (multiSelected.has(hit)) {
-        // Deselect this one
         multiSelected.delete(hit);
         removeHighlight(hit);
-        // Update primary to last remaining, or null
         const remaining = [...multiSelected];
         const newPrimary = remaining[remaining.length - 1] || null;
         objManager.selectObject(newPrimary);
         if (newPrimary && currentTool !== 'select') { transformControl.attach(newPrimary); transformControl.setMode(currentTool); }
         else transformControl.detach();
       } else {
-        // Add to selection
         multiSelected.add(hit);
         applyHighlight(hit);
         objManager.selectObject(hit);
@@ -341,7 +295,6 @@ window.addEventListener('pointerup', (e) => {
       }
     }
   } else {
-    // Plain LMB: clear multi, select single
     clearAllSelections();
     if (hit) {
       objManager.selectObject(hit);
@@ -358,8 +311,6 @@ window.addEventListener('pointerup', (e) => {
 // ── Keyboard ──
 window.addEventListener('keydown', (e) => {
   if (e.ctrlKey && (e.key === 'z' || e.key === 'Z')) {
-    // Mesh mode handles its own undo via stopImmediatePropagation — this only
-    // fires when we're in object mode.
     if (currentMode === 'mesh') return;
     const action = undoStack.pop();
     if (action) {
@@ -406,6 +357,7 @@ window.addEventListener('keydown', (e) => {
   }
 
   if (e.key === 'Delete' || e.key === 'Backspace') {
+    if (currentMode === 'mesh') return;
     const sel = objManager.getSelected();
     if (sel) {
       undoStack.push({ type: 'delete', mesh: sel });
@@ -434,9 +386,8 @@ document.querySelectorAll('.menu-item').forEach(item => {
 });
 
 window.addEventListener('click', (e) => {
-  if (addMenu.classList.contains('visible') && !e.target.closest('#add-menu') && !e.shiftKey) {
+  if (addMenu.classList.contains('visible') && !e.target.closest('#add-menu') && !e.shiftKey)
     addMenu.classList.remove('visible');
-  }
 });
 
 // ════════════════════════════════════════════════
@@ -558,9 +509,9 @@ window.addEventListener('mousedown', (e) => {
 
 canvas.addEventListener('contextmenu', e => e.preventDefault());
 
-// Right-click on viewport → context menu for hit object
 renderer.domElement.addEventListener('contextmenu', (e) => {
   e.preventDefault();
+  if (currentMode === 'mesh') return;
   const hit = raycastAt(e.clientX, e.clientY);
   if (hit) {
     objManager.selectObject(hit);
