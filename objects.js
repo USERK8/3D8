@@ -3,7 +3,8 @@ import * as THREE from 'three';
 const MAT_DEFAULT = new THREE.MeshStandardMaterial({
   color: 0xffffff,
   roughness: 0.3,
-  metalness: 0.1
+  metalness: 0.1,
+  side: THREE.DoubleSide,   // always visible from both sides in layout mode
 });
 
 export class ObjectManager {
