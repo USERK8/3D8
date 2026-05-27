@@ -29,6 +29,7 @@ export function createLights(scene) {
   const sun = new THREE.DirectionalLight(0xffffff, 1.0);
   sun.position.set(8, 12, 6);
   sun.castShadow = true;
+  sun.shadow.bias = -0.005;
   scene.add(sun);
   
   const fill = new THREE.DirectionalLight(0x8899bb, 0.3);
