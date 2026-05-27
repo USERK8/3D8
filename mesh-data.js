@@ -46,7 +46,7 @@ export class MeshData {
 
   // ─────────────────────────────────────────────────────────── topology ──
 
-  _buildTopology() {
+  _buildTopology(wallTriStart = -1, wallTriCount = 0) {
     const geo   = this.geo;
     const pos   = this.pos;
     const index = geo.index;
@@ -96,14 +96,14 @@ export class MeshData {
     };
 
     // Build logical quad groups for face selection
-    this.quadGroups = buildQuadGroups(this.geo);
+    this.quadGroups = buildQuadGroups(this.geo, wallTriStart, wallTriCount);
     this.faceCount  = this.quadGroups.length;  // expose quad count, not tri count
 
     this.dirty.topology = false;
   }
 
-  rebuildTopology() {
-    this._buildTopology();
+  rebuildTopology(wallTriStart = -1, wallTriCount = 0) {
+    this._buildTopology(wallTriStart, wallTriCount);
     this.dirty.topology = false;
   }
 
@@ -357,7 +357,7 @@ function applyMat4raw(x, y, z, m) {
 // Groups coplanar adjacent triangle pairs into logical "quads" for face mode.
 // Returns array of { tris: [fi, ...], verts: [vi, ...], normal: {x,y,z} }
 // Each group is what the user sees and selects as one face.
-export function buildQuadGroups(geo) {
+export function buildQuadGroups(geo, wallTriStart = -1, wallTriCount = 0) {
   const pos   = geo.attributes.position;
   const index = geo.index;
   if (!index) return [];
@@ -402,6 +402,14 @@ export function buildQuadGroups(geo) {
     if (Math.abs(dot) > COPLANAR) union(fa, fb);
   });
 
+  // Force-merge wall tri pairs (they come in consecutive pairs and are always flat quads,
+  // but at extrude distance=0 their normals are degenerate so coplanar check fails)
+  if (wallTriStart >= 0) {
+    for (let i = wallTriStart; i < wallTriStart + wallTriCount - 1; i += 2) {
+      union(i, i + 1);
+    }
+  }
+
   // Group triangles by root
   const groups = new Map();
   for (let fi = 0; fi < fc; fi++) {
@@ -426,10 +434,14 @@ export function buildQuadGroups(geo) {
 //   3. Non-selected faces are untouched (keep original indices)
 //   4. Selected faces remap to the duplicated (cap) verts
 //   5. Boundary edges get quad side-walls stitching base → cap
+// Returns { geo, capTriStart, capTriCount, wallTriStart, wallTriCount }
+// capTriStart/Count = triangle indices in newGeo that are the extruded cap
+// wallTriStart/Count = triangle indices that are side walls
+// This lets _beginExtrude identify cap/wall quad groups exactly after topology rebuild.
 export function extrudeFaces(geo, selectedGroups, quadGroups, distance = 0) {
   const oldPos   = geo.attributes.position;
   const oldIndex = geo.index;
-  if (!oldIndex) return geo;
+  if (!oldIndex) return { geo, capTriStart: 0, capTriCount: 0, wallTriStart: 0, wallTriCount: 0 };
 
   const fc = oldIndex.count / 3 | 0;
 
@@ -457,18 +469,11 @@ export function extrudeFaces(geo, selectedGroups, quadGroups, distance = 0) {
   const nlen = Math.hypot(nx, ny, nz) || 1;
   nx /= nlen; ny /= nlen; nz /= nlen;
 
-  // New position buffer:
-  //   [0 .. oldCount-1]          = all original verts (unchanged)
-  //   [oldCount .. oldCount+N-1] = duplicated cap verts (pushed along normal)
   const oldCount  = oldPos.count;
-  const newCount  = oldCount + selVerts.size;
-  const newPosArr = new Float32Array(newCount * 3);
-
-  // Copy every original vert unchanged
+  const newPosArr = new Float32Array((oldCount + selVerts.size) * 3);
   for (let i = 0; i < oldCount * 3; i++) newPosArr[i] = oldPos.array[i];
 
-  // Duplicate selected verts → cap (offset by distance along normal)
-  const oldToNew = new Map(); // old vi → new (cap) vi
+  const oldToNew = new Map();
   let insertIdx  = oldCount;
   selVerts.forEach(vi => {
     oldToNew.set(vi, insertIdx);
@@ -478,60 +483,50 @@ export function extrudeFaces(geo, selectedGroups, quadGroups, distance = 0) {
     insertIdx++;
   });
 
-  // Build index array
-  // Non-selected faces → original indices (base stays closed)
-  // Selected faces     → remapped to cap indices
   const newTriangles = [];
 
+  // 1. Unselected faces unchanged
   for (let fi = 0; fi < fc; fi++) {
-    const a = oldIndex.getX(fi * 3);
-    const b = oldIndex.getX(fi * 3 + 1);
-    const c = oldIndex.getX(fi * 3 + 2);
-    if (selTris.has(fi)) {
-      // Cap face — use duplicated verts
-      newTriangles.push(oldToNew.get(a), oldToNew.get(b), oldToNew.get(c));
-    } else {
-      // Unselected face — keep as-is
-      newTriangles.push(a, b, c);
-    }
+    if (selTris.has(fi)) continue;
+    newTriangles.push(oldIndex.getX(fi*3), oldIndex.getX(fi*3+1), oldIndex.getX(fi*3+2));
   }
 
-  // Side walls — fast O(n) approach with a directed-edge map.
-  // For every edge walked in winding order (a→b), store which face owns it.
-  // A boundary edge is one where the directed edge a→b belongs to a selected tri
-  // but b→a is NOT owned by another selected tri (i.e. it borders an unselected
-  // face or is a mesh border). These edges get a quad wall.
-  const dirEdgeOwner = new Map(); // "a_b" → fi (directed)
+  // 2. Cap faces — record start index
+  const capTriStart = newTriangles.length / 3;
+  for (let fi = 0; fi < fc; fi++) {
+    if (!selTris.has(fi)) continue;
+    const a = oldIndex.getX(fi*3), b = oldIndex.getX(fi*3+1), c = oldIndex.getX(fi*3+2);
+    newTriangles.push(oldToNew.get(a), oldToNew.get(b), oldToNew.get(c));
+  }
+  const capTriCount = newTriangles.length / 3 - capTriStart;
+
+  // 3. Side walls — record start index
+  const dirEdgeOwner = new Map();
   for (let fi = 0; fi < fc; fi++) {
     for (let j = 0; j < 3; j++) {
-      const a = oldIndex.getX(fi * 3 + j);
-      const b = oldIndex.getX(fi * 3 + (j + 1) % 3);
+      const a = oldIndex.getX(fi*3+j), b = oldIndex.getX(fi*3+(j+1)%3);
       dirEdgeOwner.set(`${a}_${b}`, fi);
     }
   }
 
+  const wallTriStart = newTriangles.length / 3;
   for (let fi = 0; fi < fc; fi++) {
     if (!selTris.has(fi)) continue;
     for (let j = 0; j < 3; j++) {
-      const a  = oldIndex.getX(fi * 3 + j);
-      const b  = oldIndex.getX(fi * 3 + (j + 1) % 3);
-      // The opposite directed edge b→a
+      const a = oldIndex.getX(fi*3+j), b = oldIndex.getX(fi*3+(j+1)%3);
       const oppOwner = dirEdgeOwner.get(`${b}_${a}`);
-      // Boundary = opposite edge not owned by a selected tri
       if (oppOwner !== undefined && selTris.has(oppOwner)) continue;
-      const na2 = oldToNew.get(a);
-      const nb2 = oldToNew.get(b);
+      const na2 = oldToNew.get(a), nb2 = oldToNew.get(b);
       if (na2 === undefined || nb2 === undefined) continue;
-      // Quad wall stitching base (a,b) to cap (na2,nb2)
-      // Winding follows selected-face outward normal
-      newTriangles.push(a,  nb2, b  );
-      newTriangles.push(a,  na2, nb2);
+      newTriangles.push(a, nb2, b);
+      newTriangles.push(a, na2, nb2);
     }
   }
+  const wallTriCount = newTriangles.length / 3 - wallTriStart;
 
   const newGeo = geo.clone();
   newGeo.setAttribute('position', new THREE.Float32BufferAttribute(newPosArr, 3));
   newGeo.setIndex(newTriangles);
   newGeo.computeVertexNormals();
-  return newGeo;
+  return { geo: newGeo, capTriStart, capTriCount, wallTriStart, wallTriCount };
 }
