@@ -52,6 +52,7 @@ export class MeshEditor {
 
     this._undoStack = [];
     this._preSnap   = null;
+    this._dragBase  = new THREE.Vector3();
 
     this._vertMeshes    = [];
     this._edgeEntries   = [];
@@ -66,17 +67,13 @@ export class MeshEditor {
 
     this._rc = new THREE.Raycaster();
 
-    // ── Blender-style drag: a Group that owns one Object3D per selected vert ──
-    // The gizmo attaches directly to this group (same as layout mode).
-    // Each child's world position IS that vertex's world position — no delta math.
-    this._dragGroup   = new THREE.Group();
-    this._dragMarkers = new Map(); // vertIndex → Object3D
-    scene.add(this._dragGroup);
+    this._proxy = new THREE.Object3D();
+    scene.add(this._proxy);
 
     this._gizmo = new TransformControls(camera, renderer.domElement);
     this._gizmo.setMode('translate');
     this._gizmo.setSize(GIZMO_SIZE);
-    this._gizmo.translationSnap = null;  // no grid snap — free movement
+    this._gizmo.translationSnap = null;
     this._gizmo.rotationSnap    = null;
     this._gizmo.scaleSnap       = null;
     scene.add(this._gizmo);
@@ -84,26 +81,18 @@ export class MeshEditor {
     this._gizmo.addEventListener('mouseDown', () => {
       this.orbit.enabled = false;
       this._saveSnap();
-      // Snapshot each marker's starting local offset from the group centre
-      // so we can apply the group's transform delta to each vert.
-      this._markerStartOffsets = new Map();
-      this._groupStartPos = this._dragGroup.position.clone();
-      this._dragMarkers.forEach((marker, vi) => {
-        this._markerStartOffsets.set(vi, marker.getWorldPosition(new THREE.Vector3()).clone());
-      });
+      this._dragBase.copy(this._proxy.position);
     });
 
     this._gizmo.addEventListener('change', () => {
       if (!this._gizmo.dragging) return;
-      this._syncMarkersToGeometry();
+      this._applyTotalDelta();
     });
 
     this._gizmo.addEventListener('mouseUp', () => {
       this.orbit.enabled = true;
       this._commitSnap();
-      // Re-build so overlays snap to final positions, then re-attach gizmo
-      this._rebuildOverlaysOnly();
-      this._attachGizmoToSelection();
+      this._reanchorGizmo();
     });
 
     this._box = { active: false, pending: false, start: null, end: null, div: null };
@@ -114,76 +103,13 @@ export class MeshEditor {
     this._onKeyDown     = this._onKeyDown.bind(this);
   }
 
-  // ── Core: sync group's current world transform → geometry buffer (called every frame of drag) ──
-  _syncMarkersToGeometry() {
-    if (!this._preSnap || !this._markerStartOffsets) return;
-
-    const pos    = this.targetMesh.geometry.attributes.position;
-    const invMat = this.targetMesh.matrixWorld.clone().invert();
-
-    // Delta the whole group moved in world space
-    const groupDelta = this._dragGroup.position.clone().sub(this._groupStartPos);
-
-    this._markerStartOffsets.forEach((worldStart, vi) => {
-      const newWorld = worldStart.clone().add(groupDelta);
-      const local    = newWorld.clone().applyMatrix4(invMat);
-      pos.setXYZ(vi, local.x, local.y, local.z);
-    });
-
-    pos.needsUpdate = true;
-    this.targetMesh.geometry.computeVertexNormals();
-    this._rebuildOverlaysOnly();
-  }
-
-  // ── Build/reposition the drag group & markers to match current selection centroid ──
-  _attachGizmoToSelection() {
-    // Clear old markers
-    while (this._dragGroup.children.length) this._dragGroup.remove(this._dragGroup.children[0]);
-    this._dragMarkers.clear();
-
-    const vis = this._selectedVertIndices();
-    if (!vis.size) { this._gizmo.detach(); return; }
-
-    const pos = this.targetMesh.geometry.attributes.position;
-    const mat = this.targetMesh.matrixWorld;
-
-    // Compute centroid in world space → place group there
-    const centroid = new THREE.Vector3();
-    vis.forEach(i => centroid.add(getWorldVert(pos, i, mat)));
-    centroid.divideScalar(vis.size);
-    this._dragGroup.position.copy(centroid);
-    this._dragGroup.rotation.set(0, 0, 0);
-    this._dragGroup.scale.set(1, 1, 1);
-    this._dragGroup.updateMatrixWorld(true);
-
-    // One invisible marker per selected vert, positioned relative to group
-    vis.forEach(vi => {
-      const worldPos = getWorldVert(pos, vi, mat);
-      const marker   = new THREE.Object3D();
-      // local offset inside the group
-      marker.position.copy(worldPos.clone().sub(centroid));
-      this._dragGroup.add(marker);
-      this._dragMarkers.set(vi, marker);
-    });
-
-    // Attach gizmo directly to the group — identical to how layout mode works
-    this._gizmo.attach(this._dragGroup);
-  }
-
-  _hideGizmo() {
-    this._gizmo.detach();
-    while (this._dragGroup.children.length) this._dragGroup.remove(this._dragGroup.children[0]);
-    this._dragMarkers.clear();
-  }
-
-  _updateGizmo() { this._attachGizmoToSelection(); }
-
   enter(mesh) {
     this.targetMesh = mesh;
     this.subMode    = 'vertex';
     this.selVerts.clear(); this.selEdges.clear(); this.selFaces.clear();
     this._undoStack = [];
 
+    // Fix backface culling and transparency on the mesh itself
     this._origSide       = mesh.material.side;
     this._origDepthWrite = mesh.material.depthWrite;
     mesh.material.side       = THREE.DoubleSide;
@@ -251,6 +177,21 @@ export class MeshEditor {
     if (this._preSnap) { this._undoStack.push(this._preSnap); this._preSnap = null; }
   }
 
+  _showGizmo(worldPos) {
+    this._proxy.position.copy(worldPos);
+    this._dragBase.copy(worldPos);
+    this._gizmo.attach(this._proxy);
+  }
+  _hideGizmo() { this._gizmo.detach(); }
+  _reanchorGizmo() {
+    const c = this._centroid();
+    c ? this._showGizmo(c) : this._hideGizmo();
+  }
+  _updateGizmo() {
+    const c = this._centroid();
+    c ? this._showGizmo(c) : this._hideGizmo();
+  }
+
   _centroid() {
     const vis = this._selectedVertIndices();
     if (!vis.size) return null;
@@ -279,6 +220,35 @@ export class MeshEditor {
       });
     }
     return out;
+  }
+
+  _applyTotalDelta() {
+    if (!this._preSnap) return;
+    const totalWorld = this._proxy.position.clone().sub(this._dragBase);
+    if (totalWorld.lengthSq() < 1e-18) return;
+    const pos    = this.targetMesh.geometry.attributes.position;
+    const invMat = this.targetMesh.matrixWorld.clone().invert();
+
+    // Convert world-space delta to local space correctly.
+    // invMat includes translation, so applyMatrix4 on a pure delta vector
+    // would add the mesh's local origin offset. Fix: subtract p0 (origin
+    // transformed through invMat) from p1 (delta transformed through invMat).
+    // This gives the pure rotated+scaled delta without translation drift.
+    const p0 = new THREE.Vector3(0, 0, 0).applyMatrix4(invMat);
+    const p1 = totalWorld.clone().applyMatrix4(invMat);
+    const totalLocal = p1.sub(p0);
+
+    const vis = this._selectedVertIndices();
+    vis.forEach(i => {
+      pos.setXYZ(i,
+        this._preSnap[i].x + totalLocal.x,
+        this._preSnap[i].y + totalLocal.y,
+        this._preSnap[i].z + totalLocal.z,
+      );
+    });
+    pos.needsUpdate = true;
+    this.targetMesh.geometry.computeVertexNormals();
+    this._rebuildOverlaysOnly();
   }
 
   _rebuild() {
@@ -490,20 +460,153 @@ export class MeshEditor {
     return hits.length ? hits[0].object.userData.faceIndex : -1;
   }
 
+  // ── Direct drag (Blender-style: click+drag a vert/edge/face to move it freely) ──
+  //
+  // On pointerdown: pick what's under cursor. If something is hit and not yet
+  // selected, select it first. Then start a drag session:
+  //   • build a hit-plane through the selection centroid, facing the camera
+  //   • record each selected vert's offset from that centroid in world space
+  // On pointermove: raycast against the hit-plane → new centroid → move all verts.
+  // On pointerup: commit to undo stack.
+  //
+  // A move < DRAG_THRESHOLD px is treated as a pure click (selection only).
+
   _onPointerDown(e) {
     if (e.button !== 0) return;
-    if (this._gizmo.axis !== null) return;
+    if (this._gizmo.axis !== null) return;   // gizmo is handling this
     if (this._box.pending) { this._startBoxSelect(e); return; }
-    this._doClickSelect(e);
+
+    // --- hit test ---
+    let hitSomething = false;
+    if (this.subMode === 'vertex') {
+      const vi = this._pickVert(e);
+      if (vi >= 0) {
+        if (!e.shiftKey && !this.selVerts.has(vi)) {
+          this.selVerts.clear(); this.selVerts.add(vi);
+          this._rebuild(); this._updateGizmo();
+        } else if (e.shiftKey) {
+          this.selVerts.has(vi) ? this.selVerts.delete(vi) : this.selVerts.add(vi);
+          this._rebuild(); this._updateGizmo();
+        }
+        hitSomething = this.selVerts.has(vi) || this.selVerts.size > 0;
+      }
+    } else if (this.subMode === 'edge') {
+      const ei = this._pickEdge(e.clientX, e.clientY);
+      if (ei >= 0) {
+        const key = this._edgeEntries[ei].key;
+        if (!e.shiftKey && !this.selEdges.has(key)) {
+          this.selEdges.clear(); this.selEdges.add(key);
+          this._rebuild(); this._updateGizmo();
+        } else if (e.shiftKey) {
+          this.selEdges.has(key) ? this.selEdges.delete(key) : this.selEdges.add(key);
+          this._rebuild(); this._updateGizmo();
+        }
+        hitSomething = this.selEdges.size > 0;
+      }
+    } else if (this.subMode === 'face') {
+      const fi = this._pickFace(e);
+      if (fi >= 0) {
+        if (!e.shiftKey && !this.selFaces.has(fi)) {
+          this.selFaces.clear(); this.selFaces.add(fi);
+          this._rebuild(); this._updateGizmo();
+        } else if (e.shiftKey) {
+          this.selFaces.has(fi) ? this.selFaces.delete(fi) : this.selFaces.add(fi);
+          this._rebuild(); this._updateGizmo();
+        }
+        hitSomething = this.selFaces.size > 0;
+      }
+    }
+
+    if (!hitSomething) {
+      // clicked empty space — deselect (unless shift)
+      if (!e.shiftKey) {
+        this.selVerts.clear(); this.selEdges.clear(); this.selFaces.clear();
+        this._rebuild(); this._hideGizmo();
+      }
+      return;
+    }
+
+    // --- prepare drag ---
+    const centroid = this._centroid();
+    if (!centroid) return;
+
+    // hit-plane: faces the camera, passes through the centroid
+    const camDir = new THREE.Vector3();
+    this.camera.getWorldDirection(camDir);
+    this._dragPlane = new THREE.Plane().setFromNormalAndCoplanarPoint(camDir, centroid);
+
+    // per-vert offset from centroid (world space)
+    const pos = this.targetMesh.geometry.attributes.position;
+    const mat = this.targetMesh.matrixWorld;
+    this._dragOffsets = new Map();
+    this._selectedVertIndices().forEach(vi => {
+      const wp = getWorldVert(pos, vi, mat);
+      this._dragOffsets.set(vi, wp.clone().sub(centroid));
+    });
+
+    this._dragStartClient = { x: e.clientX, y: e.clientY };
+    this._isDragging      = false;   // becomes true once we exceed threshold
+    this._saveSnap();
+
+    this.orbit.enabled = false;
+    e.stopPropagation();
   }
 
   _onPointerMove(e) {
-    if (this._box.active) this._updateBoxSelect(e);
+    if (this._box.active) { this._updateBoxSelect(e); return; }
+    if (!this._dragOffsets) return;
+
+    // threshold: treat as drag only after 4 px movement
+    if (!this._isDragging) {
+      const dx = e.clientX - this._dragStartClient.x;
+      const dy = e.clientY - this._dragStartClient.y;
+      if (Math.hypot(dx, dy) < 4) return;
+      this._isDragging = true;
+    }
+
+    // raycast against the hit-plane to get new centroid world pos
+    this._rc.setFromCamera(this._ndc(e.clientX, e.clientY), this.camera);
+    const newCentroid = new THREE.Vector3();
+    if (!this._rc.ray.intersectPlane(this._dragPlane, newCentroid)) return;
+
+    // write each vert back: new centroid + its saved offset, transformed to local space
+    const pos    = this.targetMesh.geometry.attributes.position;
+    const invMat = this.targetMesh.matrixWorld.clone().invert();
+
+    this._dragOffsets.forEach((offset, vi) => {
+      const newWorld = newCentroid.clone().add(offset);
+      const local    = newWorld.applyMatrix4(invMat);
+      pos.setXYZ(vi, local.x, local.y, local.z);
+    });
+
+    pos.needsUpdate = true;
+    this.targetMesh.geometry.computeVertexNormals();
+    this._rebuildOverlaysOnly();
+    this._updateGizmo();
+
+    e.stopPropagation();
   }
 
   _onPointerUp(e) {
-    if (this._box.active) this._endBoxSelect(e);
+    if (this._box.active) { this._endBoxSelect(e); return; }
+
+    if (this._dragOffsets) {
+      if (!this._isDragging) {
+        // pure click — re-run normal click-select
+        this._undoClickPeek();   // discard the snap we saved
+        this._doClickSelect(e);
+      } else {
+        this._commitSnap();
+      }
+      this._dragOffsets      = null;
+      this._dragPlane        = null;
+      this._isDragging       = false;
+      this.orbit.enabled     = true;
+    }
   }
+
+  // discard the last _saveSnap() if drag never happened
+  _undoClickPeek() { this._preSnap = null; }
 
   _doClickSelect(e) {
     const shift = e.shiftKey;
