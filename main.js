@@ -22,9 +22,8 @@ createGrid(scene);
 const orbit     = createControls(camera, canvas);
 const objManager = new ObjectManager(scene);
 const clock     = new THREE.Clock();
-const meshEditor = new MeshEditor(scene, camera, renderer, orbit, appHistory);
-
 const appHistory = new History();
+const meshEditor = new MeshEditor(scene, camera, renderer, orbit, appHistory);
 let   dragStartState = null;
 
 // ── Gizmo ──
