@@ -149,10 +149,10 @@ export class ObjectManager {
          }
       }
       
-      // Subtle bright-white selection tint (visible but not red)
-      this.selected.material.color.set(0xeeeeee);
+      // Blue highlight when selected in layout mode
+      this.selected.material.color.set(0x4488ff);
       if (this.selected.material.emissive) {
-          this.selected.material.emissive.set(0x111111);
+          this.selected.material.emissive.set(0x112244);
       }
     }
   }
