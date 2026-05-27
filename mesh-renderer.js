@@ -17,12 +17,12 @@
 import * as THREE from 'three';
 
 const COLOR = {
-  VERT_IDLE     : new THREE.Color(0x222222),
-  VERT_SEL      : new THREE.Color(0xff8800),
-  EDGE_IDLE     : new THREE.Color(0x333333),
-  EDGE_SEL      : new THREE.Color(0xff8800),
-  FACE_SEL_COLOR: new THREE.Color(0xff8800),
-  FACE_SEL_OP   : 0.30,
+  VERT_IDLE     : new THREE.Color(0xffffff),   // white dots
+  VERT_SEL      : new THREE.Color(0x88aaff),   // light blue selected
+  EDGE_IDLE     : new THREE.Color(0xcccccc),   // light grey lines
+  EDGE_SEL      : new THREE.Color(0xaa88ff),   // purple selected edge
+  FACE_SEL_COLOR: new THREE.Color(0x7799ff),   // blue-purple face highlight
+  FACE_SEL_OP   : 0.38,
 };
 
 const VERT_RADIUS = 0.055;
@@ -174,43 +174,56 @@ export class MeshRenderer {
     // Selected-edge cylinders
     if (subMode === 'edge') this._rebuildEdgeCylinders(data);
 
-    // ── Face overlays ──
-    if (subMode === 'face' && index) {
-      const fc = data.faceCount;
-      for (let fi = 0; fi < fc; fi++) {
-        const ai = index.getX(fi * 3), bi = index.getX(fi * 3 + 1), ci = index.getX(fi * 3 + 2);
-        const va = data.vertWorldPos(ai);
-        const vb = data.vertWorldPos(bi);
-        const vc = data.vertWorldPos(ci);
-        const verts = [va.x, va.y, va.z, vb.x, vb.y, vb.z, vc.x, vc.y, vc.z];
-        const sel = data.selFaces.has(fi);
+    // ── Face overlays — one mesh per logical quad group ──
+    this._faceMeshes    = [];
+    this._faceHitMeshes = [];
+
+    if (subMode === 'face' && data.quadGroups && data.quadGroups.length) {
+      data.quadGroups.forEach((group, gi) => {
+        const sel = data.selFaces.has(gi);
+
+        // Build combined position + index arrays from all triangles in this group
+        const posArr = [];
+        const idxArr = [];
+        const viMap  = new Map();
+
+        group.tris.forEach(fi => {
+          for (let j = 0; j < 3; j++) {
+            const vi = index.getX(fi * 3 + j);
+            if (!viMap.has(vi)) {
+              viMap.set(vi, posArr.length / 3);
+              const wp = data.vertWorldPos(vi);
+              posArr.push(wp.x, wp.y, wp.z);
+            }
+            idxArr.push(viMap.get(vi));
+          }
+        });
 
         const fg = new THREE.BufferGeometry();
-        fg.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
-        fg.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
-        fg.setIndex([0, 1, 2]);
+        fg.setAttribute('position', new THREE.Float32BufferAttribute(posArr, 3));
+        fg.setIndex(idxArr);
         const fm = new THREE.Mesh(fg, new THREE.MeshBasicMaterial({
           color: COLOR.FACE_SEL_COLOR, transparent: true,
           opacity: sel ? COLOR.FACE_SEL_OP : 0.0,
           side: THREE.DoubleSide, depthTest: true,
         }));
         fm.renderOrder = 2;
-        fm.userData.faceIndex = fi;
+        fm.userData.faceIndex = gi;
         this._grpFace.add(fm);
         this._faceMeshes.push(fm);
 
         const hg = new THREE.BufferGeometry();
-        hg.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
-        hg.setIndex([0, 1, 2]);
+        hg.setAttribute('position', new THREE.Float32BufferAttribute(posArr, 3));
+        hg.setIndex(idxArr);
         const hm = new THREE.Mesh(hg, new THREE.MeshBasicMaterial({
           transparent: true, opacity: 0, side: THREE.DoubleSide, depthTest: true,
         }));
         hm.renderOrder = 1;
-        hm.userData.faceIndex = fi;
+        hm.userData.faceIndex = gi;
         this._grpFace.add(hm);
         this._faceHitMeshes.push(hm);
-      }
-      this._lastFaceCount = fc;
+      });
+      this._lastFaceCount = data.quadGroups.length;
     }
   }
 
@@ -324,7 +337,7 @@ export class MeshRenderer {
         (wa.x + wb.x) / 2, (wa.y + wb.y) / 2, (wa.z + wb.z) / 2);
       const cyl = new THREE.Mesh(
         new THREE.CylinderGeometry(0.012, 0.012, len, 6),
-        new THREE.MeshBasicMaterial({ color: 0xff8800, depthTest: true })
+        new THREE.MeshBasicMaterial({ color: 0xaa88ff, depthTest: true })
       );
       cyl.position.copy(mid);
       cyl.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.normalize());
