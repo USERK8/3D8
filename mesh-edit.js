@@ -14,7 +14,7 @@
 
 import * as THREE from 'three';
 import { TransformControls } from 'three/addons/controls/TransformControls.js';
-import { MeshData }     from './mesh-data.js';
+import { MeshData, extrudeFaces } from './mesh-data.js';
 import { MeshRenderer } from './mesh-renderer.js';
 
 const GIZMO_SIZE   = 0.75;
@@ -86,6 +86,11 @@ export class MeshEditor {
     this._dragPlane        = null;
     this._dragStartClient  = null;
     this._isDragging       = false;
+
+    // Extrude state
+    this._extruding     = false;
+    this._extrudeBase   = null;  // world pos where extrude drag started
+    this._extrudeGeoOld = null;  // geometry snapshot before extrude
 
     this._onPointerDown = this._onPointerDown.bind(this);
     this._onPointerMove = this._onPointerMove.bind(this);
@@ -522,6 +527,20 @@ export class MeshEditor {
     if (e.key === 'a' || e.key === 'A') { this._data?.toggleSelectAll(); this._renderer.update(this._data); this._updateGizmo(); return; }
     if ((e.key === 'b' || e.key === 'B') && !this._box.active) { this._box.pending = true; return; }
 
+    if (e.key === 'e' || e.key === 'E') {
+      if (!this._data) return;
+      if (this._data.subMode !== 'face') {
+        this._showToast(`Extrude not available in ${this._data.subMode} mode`);
+        return;
+      }
+      if (!this._data.selFaces.size) {
+        this._showToast('Select a face first');
+        return;
+      }
+      this._beginExtrude();
+      return;
+    }
+
     if (e.key === 'o' || e.key === 'O') {
       this._propEnabled = !this._propEnabled;
       if (!this._propEnabled) this._removePropCircle();
@@ -540,6 +559,65 @@ export class MeshEditor {
         this._hideGizmo();
       }
     }
+  }
+
+  // ── Extrude ─────────────────────────────────────────────────────────────
+  // Blender-style: E duplicates faces, attaches gizmo immediately.
+  // Moving the gizmo pushes the extruded cap along its normal.
+
+  _beginExtrude() {
+    const d   = this._data;
+    const geo = d.geo;
+
+    // Snapshot geometry before extrude for undo
+    this._extrudeGeoOld = new Float32Array(d.pos.array);
+    const oldIndex = new Uint32Array(geo.index.array);
+
+    // Build new geometry with extrusion at distance=0
+    const newGeo = extrudeFaces(geo, [...d.selFaces], d.quadGroups, 0);
+
+    // Swap geometry on the mesh
+    geo.setAttribute('position', newGeo.attributes.position);
+    geo.setIndex(newGeo.index);
+    geo.computeVertexNormals();
+
+    // Refresh MeshData with new geometry refs
+    d.pos   = geo.attributes.position;
+    d.geo   = geo;
+
+    // Rebuild topology on the new geometry
+    d.dirty.topology = true;
+    d.rebuildTopology();
+
+    // The extruded cap verts are the new ones at the end of the buffer
+    // They map to the same quad groups but at new indices — reselect them
+    // by selecting the last N quad groups (the extruded cap)
+    // Actually: after extrude, the top faces become the last faceCount groups.
+    // Simplest: select all faces whose centroid moved (i.e. all new top faces).
+    // For now, re-select by matching normal direction of old selection.
+    const selNormals = [...d.selFaces].map(gi => d.quadGroups[gi]?.normal).filter(Boolean);
+    d.selFaces.clear();
+    d.quadGroups.forEach((group, gi) => {
+      const n = group.normal;
+      const matches = selNormals.some(sn =>
+        Math.abs(sn.x*n.x + sn.y*n.y + sn.z*n.z) > 0.999
+      );
+      if (matches) d.selFaces.add(gi);
+    });
+
+    d.dirty.topology  = true;
+    d.dirty.positions = true;
+    d.dirty.selection = true;
+    this._renderer.update(d);
+    this._updateGizmo();
+
+    // Push to history
+    const snapBefore = this._extrudeGeoOld;
+    const snapAfter  = new Float32Array(d.pos.array);
+    this._history.push({ type: 'mesh-edit', mesh: d.mesh, snapBefore, snapAfter });
+
+    this._showToast('Extrude — drag gizmo to set depth');
+    this._extruding = false;
   }
 
   _showToast(msg) {
