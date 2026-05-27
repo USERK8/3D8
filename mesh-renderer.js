@@ -17,12 +17,12 @@
 import * as THREE from 'three';
 
 const COLOR = {
-  VERT_IDLE     : new THREE.Color(0xffffff),   // white dots
-  VERT_SEL      : new THREE.Color(0x88aaff),   // light blue selected
-  EDGE_IDLE     : new THREE.Color(0xcccccc),   // light grey lines
-  EDGE_SEL      : new THREE.Color(0xaa88ff),   // purple selected edge
-  FACE_SEL_COLOR: new THREE.Color(0x7799ff),   // blue-purple face highlight
-  FACE_SEL_OP   : 0.38,
+  VERT_IDLE     : new THREE.Color(0xdddddd),   // light grey dots
+  VERT_SEL      : new THREE.Color(0x99aaff),   // blue-purple selected
+  EDGE_IDLE     : new THREE.Color(0xff4444),   // red corner edges
+  EDGE_SEL      : new THREE.Color(0xaa88ff),   // blue-purple selected edge
+  FACE_SEL_COLOR: new THREE.Color(0x8899ff),   // blue-purple face highlight
+  FACE_SEL_OP   : 0.40,
 };
 
 const VERT_RADIUS = 0.055;
@@ -337,7 +337,7 @@ export class MeshRenderer {
         (wa.x + wb.x) / 2, (wa.y + wb.y) / 2, (wa.z + wb.z) / 2);
       const cyl = new THREE.Mesh(
         new THREE.CylinderGeometry(0.012, 0.012, len, 6),
-        new THREE.MeshBasicMaterial({ color: 0xaa88ff, depthTest: true })
+        new THREE.MeshBasicMaterial({ color: 0xaa88ff, depthTest: true, transparent: true, opacity: 0.9 })
       );
       cyl.position.copy(mid);
       cyl.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.normalize());
