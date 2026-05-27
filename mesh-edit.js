@@ -1,7 +1,6 @@
 import * as THREE from 'three';
 import { TransformControls } from 'three/addons/controls/TransformControls.js';
 
-// ── Constants ─────────────────────────────────────────────────────────────────
 const COLOR = {
   VERT_IDLE     : 0x222222,
   VERT_SEL      : 0xff8800,
@@ -11,9 +10,9 @@ const COLOR = {
   FACE_SEL_OP   : 0.30,
 };
 
-const VERT_RADIUS = 0.028;
-const GIZMO_SIZE  = 0.75;
-const EDGE_PICK_PX = 10;
+const VERT_RADIUS  = 0.055;
+const GIZMO_SIZE   = 0.75;
+const EDGE_PICK_PX = 14;
 
 function edgeKey(a, b) { return a < b ? `${a}_${b}` : `${b}_${a}`; }
 
@@ -37,7 +36,6 @@ function screenDistToSeg(px, py, ax, ay, bx, by) {
   return Math.hypot(px - (ax + t*dx), py - (ay + t*dy));
 }
 
-// ── Main class ────────────────────────────────────────────────────────────────
 export class MeshEditor {
   constructor(scene, camera, renderer, orbitControls) {
     this.scene    = scene;
@@ -102,12 +100,19 @@ export class MeshEditor {
     this._onKeyDown     = this._onKeyDown.bind(this);
   }
 
-  // ── Public API ───────────────────────────────────────────────────────────────
   enter(mesh) {
     this.targetMesh = mesh;
     this.subMode    = 'vertex';
     this.selVerts.clear(); this.selEdges.clear(); this.selFaces.clear();
     this._undoStack = [];
+
+    // Fix backface culling and transparency on the mesh itself
+    this._origSide       = mesh.material.side;
+    this._origDepthWrite = mesh.material.depthWrite;
+    mesh.material.side       = THREE.DoubleSide;
+    mesh.material.depthWrite = true;
+    mesh.material.needsUpdate = true;
+
     this._rebuild();
     this._hideGizmo();
 
@@ -121,6 +126,11 @@ export class MeshEditor {
   exit() {
     this._clear();
     this._hideGizmo();
+    if (this.targetMesh) {
+      this.targetMesh.material.side        = this._origSide       ?? THREE.FrontSide;
+      this.targetMesh.material.depthWrite   = this._origDepthWrite ?? true;
+      this.targetMesh.material.needsUpdate  = true;
+    }
     this.targetMesh = null;
     this.selVerts.clear(); this.selEdges.clear(); this.selFaces.clear();
     this._endBoxSelect();
@@ -141,9 +151,7 @@ export class MeshEditor {
     this._updateGizmo();
   }
 
-  setGizmoMode(mode) {
-    this._gizmo.setMode(mode);
-  }
+  setGizmoMode(mode) { this._gizmo.setMode(mode); }
 
   undo() {
     if (!this._undoStack.length) return false;
@@ -157,7 +165,6 @@ export class MeshEditor {
     return true;
   }
 
-  // ── Undo ─────────────────────────────────────────────────────────────────────
   _saveSnap() {
     const pos = this.targetMesh.geometry.attributes.position;
     this._preSnap = Array.from({ length: pos.count },
@@ -167,7 +174,6 @@ export class MeshEditor {
     if (this._preSnap) { this._undoStack.push(this._preSnap); this._preSnap = null; }
   }
 
-  // ── Gizmo ────────────────────────────────────────────────────────────────────
   _showGizmo(worldPos) {
     this._proxy.position.copy(worldPos);
     this._dragBase.copy(worldPos);
@@ -213,18 +219,14 @@ export class MeshEditor {
     return out;
   }
 
-  // ── Movement — snapshot-based, no drift ──────────────────────────────────────
   _applyTotalDelta() {
     if (!this._preSnap) return;
-
     const totalWorld = this._proxy.position.clone().sub(this._dragBase);
     if (totalWorld.lengthSq() < 1e-18) return;
-
     const pos        = this.targetMesh.geometry.attributes.position;
     const invMat     = this.targetMesh.matrixWorld.clone().invert();
     const totalLocal = totalWorld.clone().transformDirection(invMat);
     const vis        = this._selectedVertIndices();
-
     vis.forEach(i => {
       pos.setXYZ(i,
         this._preSnap[i].x + totalLocal.x,
@@ -232,13 +234,11 @@ export class MeshEditor {
         this._preSnap[i].z + totalLocal.z,
       );
     });
-
     pos.needsUpdate = true;
     this.targetMesh.geometry.computeVertexNormals();
     this._rebuildOverlaysOnly();
   }
 
-  // ── Overlay building ──────────────────────────────────────────────────────────
   _rebuild() {
     this._buildEdgeMap();
     this._rebuildOverlaysOnly();
@@ -294,7 +294,7 @@ export class MeshEditor {
     const index = geo.index;
     const mode  = this.subMode;
 
-    // ── Vertices ────────────────────────────────────────────────────────────
+    // Vertices
     this._vertMeshes = [];
     if (mode === 'vertex') {
       const baseGeo = new THREE.SphereGeometry(VERT_RADIUS, 7, 5);
@@ -302,8 +302,8 @@ export class MeshEditor {
         const sel  = this.selVerts.has(i);
         const mesh = new THREE.Mesh(baseGeo, new THREE.MeshBasicMaterial({
           color: sel ? COLOR.VERT_SEL : COLOR.VERT_IDLE,
-          depthTest: false, transparent: true,
-          opacity: sel ? 1.0 : 0.6,
+          depthTest: true,
+          side: THREE.DoubleSide,
         }));
         mesh.position.copy(getWorldVert(pos, i, mat));
         mesh.renderOrder        = 999;
@@ -313,7 +313,7 @@ export class MeshEditor {
       }
     }
 
-    // ── Edges ────────────────────────────────────────────────────────────────
+    // Edges
     this._edgeEntries = [];
     const positions = [], colors = [];
 
@@ -333,14 +333,35 @@ export class MeshEditor {
       eg.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
       eg.setAttribute('color',    new THREE.Float32BufferAttribute(colors, 3));
       this._edgeLineSet = new THREE.LineSegments(eg, new THREE.LineBasicMaterial({
-        vertexColors: true, depthTest: false, transparent: true,
-        opacity: mode === 'face' ? 0.45 : 0.85,
+        vertexColors: true, depthTest: true, transparent: false, opacity: 1.0,
       }));
-      this._edgeLineSet.renderOrder = 998;
+      this._edgeLineSet.renderOrder = 1;
       this._grpEdge.add(this._edgeLineSet);
     }
 
-    // ── Faces ────────────────────────────────────────────────────────────────
+    // Selected edges as cylinders (thick highlight)
+    if (mode === 'edge') {
+      this.selEdges.forEach(key => {
+        const entry = this._edgeEntries.find(e => e.key === key);
+        if (!entry) return;
+        const wa = getWorldVert(pos, entry.a, mat);
+        const wb = getWorldVert(pos, entry.b, mat);
+        const dir    = wb.clone().sub(wa);
+        const length = dir.length();
+        if (length < 1e-6) return;
+        const mid = wa.clone().add(wb).multiplyScalar(0.5);
+        const cyl = new THREE.Mesh(
+          new THREE.CylinderGeometry(0.012, 0.012, length, 6),
+          new THREE.MeshBasicMaterial({ color: COLOR.EDGE_SEL, depthTest: true })
+        );
+        cyl.position.copy(mid);
+        cyl.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0), dir.clone().normalize());
+        cyl.renderOrder = 2;
+        this._grpEdge.add(cyl);
+      });
+    }
+
+    // Faces
     this._faceMeshes    = [];
     this._faceHitMeshes = [];
 
@@ -353,7 +374,6 @@ export class MeshEditor {
         const vc = getWorldVert(pos, ci, mat);
         const verts = [va.x,va.y,va.z, vb.x,vb.y,vb.z, vc.x,vc.y,vc.z];
 
-        // Visual highlight
         const sel = this.selFaces.has(fi);
         const fg  = new THREE.BufferGeometry();
         fg.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
@@ -361,22 +381,20 @@ export class MeshEditor {
         const fm = new THREE.Mesh(fg, new THREE.MeshBasicMaterial({
           color: COLOR.FACE_SEL_COLOR, transparent: true,
           opacity: sel ? COLOR.FACE_SEL_OP : 0.0,
-          side: THREE.DoubleSide, depthTest: false,
+          side: THREE.DoubleSide, depthTest: true,
         }));
-        fm.renderOrder        = 997;
+        fm.renderOrder        = 2;
         fm.userData.faceIndex = fi;
         this._grpFace.add(fm);
         this._faceMeshes.push(fm);
 
-        // Invisible hit mesh — always raycasts regardless of selection state
         const hg = new THREE.BufferGeometry();
         hg.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
         hg.setIndex([0,1,2]);
         const hm = new THREE.Mesh(hg, new THREE.MeshBasicMaterial({
-          transparent: true, opacity: 0,
-          side: THREE.DoubleSide, depthTest: false,
+          transparent: true, opacity: 0, side: THREE.DoubleSide, depthTest: true,
         }));
-        hm.renderOrder        = 996;
+        hm.renderOrder        = 1;
         hm.userData.faceIndex = fi;
         this._grpFace.add(hm);
         this._faceHitMeshes.push(hm);
@@ -395,7 +413,6 @@ export class MeshEditor {
     this._edgeLineSet   = null;
   }
 
-  // ── Picking ───────────────────────────────────────────────────────────────────
   _ndc(clientX, clientY) {
     const r = this.renderer.domElement.getBoundingClientRect();
     return new THREE.Vector2(
@@ -414,7 +431,6 @@ export class MeshEditor {
     if (!this._edgeLineSet || !this._edgeEntries.length) return -1;
     const posAttr = this._edgeLineSet.geometry.attributes.position;
     let bestDist  = EDGE_PICK_PX, bestIdx = -1;
-
     for (let i = 0; i < this._edgeEntries.length; i++) {
       const wa = new THREE.Vector3().fromBufferAttribute(posAttr, i*2);
       const wb = new THREE.Vector3().fromBufferAttribute(posAttr, i*2+1);
@@ -432,7 +448,6 @@ export class MeshEditor {
     return hits.length ? hits[0].object.userData.faceIndex : -1;
   }
 
-  // ── Input ─────────────────────────────────────────────────────────────────────
   _onPointerDown(e) {
     if (e.button !== 0) return;
     if (this._gizmo.axis !== null) return;
@@ -485,7 +500,6 @@ export class MeshEditor {
     this._updateGizmo();
   }
 
-  // ── Box select ────────────────────────────────────────────────────────────────
   _startBoxSelect(e) {
     this._box.pending = false;
     this._box.active  = true;
@@ -504,7 +518,7 @@ export class MeshEditor {
     this._box.end = { x: e.clientX, y: e.clientY };
     const s = this._box.start, en = this._box.end;
     Object.assign(this._box.div.style, {
-      left:  Math.min(s.x,en.x)+'px', top:   Math.min(s.y,en.y)+'px',
+      left: Math.min(s.x,en.x)+'px', top:    Math.min(s.y,en.y)+'px',
       width: Math.abs(en.x-s.x)+'px', height: Math.abs(en.y-s.y)+'px',
     });
   }
@@ -528,10 +542,7 @@ export class MeshEditor {
 
     const vertScreen = (i) => {
       const v = new THREE.Vector3().fromBufferAttribute(pos, i).applyMatrix4(mat).applyMatrix4(projM);
-      return {
-        x: ( v.x + 1) / 2 * r.width  + r.left,
-        y: (-v.y + 1) / 2 * r.height + r.top,
-      };
+      return { x: (v.x+1)/2*r.width+r.left, y: (-v.y+1)/2*r.height+r.top };
     };
     const inBox = (i) => {
       const s = vertScreen(i);
@@ -558,7 +569,6 @@ export class MeshEditor {
     this._updateGizmo();
   }
 
-  // ── Keyboard ──────────────────────────────────────────────────────────────────
   _onKeyDown(e) {
     if (e.ctrlKey && (e.key === 'z' || e.key === 'Z')) {
       e.stopImmediatePropagation();
@@ -584,7 +594,6 @@ export class MeshEditor {
     const pos   = this.targetMesh?.geometry?.attributes?.position;
     const index = this.targetMesh?.geometry?.index;
     if (!pos) return;
-
     if (this.subMode === 'vertex') {
       if (this.selVerts.size === pos.count) this.selVerts.clear();
       else for (let i = 0; i < pos.count; i++) this.selVerts.add(i);
