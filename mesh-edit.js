@@ -21,11 +21,12 @@ const GIZMO_SIZE   = 0.75;
 const EDGE_PICK_PX = 14;
 
 export class MeshEditor {
-  constructor(scene, camera, renderer, orbitControls) {
+  constructor(scene, camera, renderer, orbitControls, history) {
     this.scene    = scene;
     this.camera   = camera;
     this.renderer = renderer;
     this.orbit    = orbitControls;
+    this._history  = history;
 
     this._data     = null;   // MeshData  — set in enter()
     this._renderer = new MeshRenderer(scene);
@@ -58,7 +59,8 @@ export class MeshEditor {
 
     this._gizmo.addEventListener('mouseUp', () => {
       this.orbit.enabled = true;
-      this._data.commitSnap();
+      const snap = this._data.takeSnap();
+      if (snap) this._history.push({ type: 'mesh-edit', mesh: this._data.mesh, ...snap });
       this._reanchorGizmo();
     });
 
@@ -148,16 +150,6 @@ export class MeshEditor {
   }
 
   setGizmoMode(mode) { this._gizmo.setMode(mode); }
-
-  undo() {
-    if (!this._data) return false;
-    const ok = this._data.undo();
-    if (ok) {
-      this._renderer.update(this._data);
-      this._updateGizmo();
-    }
-    return ok;
-  }
 
   // ── Gizmo delta application ──────────────────────────────────────────────
 
@@ -406,7 +398,8 @@ export class MeshEditor {
       this._data.discardSnap();
       this._doClickSelect(e);
     } else {
-      this._data.commitSnap();
+      const snap = this._data.takeSnap();
+      if (snap) this._history.push({ type: 'mesh-edit', mesh: this._data.mesh, ...snap });
     }
 
     this._dragOffsets     = null;
@@ -521,11 +514,6 @@ export class MeshEditor {
   // ── Key events ───────────────────────────────────────────────────────────
 
   _onKeyDown(e) {
-    if (e.ctrlKey && (e.key === 'z' || e.key === 'Z')) {
-      e.stopImmediatePropagation();
-      this.undo();
-      return;
-    }
     if (e.ctrlKey || e.altKey) return;
 
     if (e.key === '1') { this.setSubMode('vertex'); this._syncModeButtons('vertex'); return; }
