@@ -8,6 +8,7 @@ import { ObjectManager } from './objects.js';
 import { exportModel } from './export.js';
 import { setupImporter } from './import.js';
 import { MeshEditor } from './mesh-edit.js';
+import { History }    from './history.js';
 
 const canvas = document.getElementById('viewport');
 const scene  = createScene();
@@ -21,9 +22,9 @@ createGrid(scene);
 const orbit     = createControls(camera, canvas);
 const objManager = new ObjectManager(scene);
 const clock     = new THREE.Clock();
-const meshEditor = new MeshEditor(scene, camera, renderer, orbit);
+const meshEditor = new MeshEditor(scene, camera, renderer, orbit, history);
 
-const undoStack      = [];
+const history        = new History();
 let   dragStartState = null;
 
 // ── Gizmo ──
@@ -44,7 +45,8 @@ transformControl.addEventListener('dragging-changed', (event) => {
   if (event.value) {
     dragStartState = { pos: mesh.position.clone(), rot: mesh.rotation.clone(), scale: mesh.scale.clone() };
   } else if (dragStartState) {
-    undoStack.push({ type: 'transform', mesh, oldState: dragStartState });
+    const newState = { pos: mesh.position.clone(), rot: mesh.rotation.clone(), scale: mesh.scale.clone() };
+    history.push({ type: 'transform', mesh, oldState: dragStartState, newState });
     dragStartState = null;
   }
 });
@@ -308,25 +310,55 @@ window.addEventListener('pointerup', (e) => {
   updateUI();
 });
 
+// ── History handlers ──
+const historyHandlers = {
+  onAdd(mesh) {
+    scene.add(mesh);
+    if (!objManager.objects.includes(mesh)) objManager.objects.push(mesh);
+    updateUI();
+  },
+  onDelete(mesh) {
+    objManager.deleteObject(mesh);
+    if (transformControl.object === mesh) transformControl.detach();
+    updateUI();
+  },
+  onTransform(mesh, state) {
+    mesh.position.copy(state.pos);
+    mesh.rotation.copy(state.rot);
+    mesh.scale.copy(state.scale);
+    updateUI();
+  },
+  onMeshEdit(mesh, snap) {
+    // If we're currently in mesh mode editing this mesh, restore via MeshData
+    if (currentMode === 'mesh' && meshEditor._data?.mesh === mesh) {
+      meshEditor._data.restoreSnap(snap);
+      meshEditor._renderer.update(meshEditor._data);
+      meshEditor._updateGizmo();
+    } else {
+      // Restore geometry buffer directly (not in mesh edit mode)
+      const pos = mesh.geometry.attributes.position;
+      pos.array.set(snap);
+      pos.needsUpdate = true;
+      mesh.geometry.computeVertexNormals();
+    }
+    updateUI();
+  },
+  afterAction() { updateUI(); },
+};
+
 // ── Keyboard ──
 window.addEventListener('keydown', (e) => {
-  if (e.ctrlKey && (e.key === 'z' || e.key === 'Z')) {
-    if (currentMode === 'mesh') return;
-    const action = undoStack.pop();
-    if (action) {
-      if (action.type === 'add') {
-        objManager.deleteObject(action.mesh);
-        transformControl.detach();
-      } else if (action.type === 'delete') {
-        scene.add(action.mesh);
-        objManager.objects.push(action.mesh);
-      } else if (action.type === 'transform') {
-        action.mesh.position.copy(action.oldState.pos);
-        action.mesh.rotation.copy(action.oldState.rot);
-        action.mesh.scale.copy(action.oldState.scale);
-      }
-      updateUI();
-    }
+  if (e.ctrlKey && (e.key === 'z' || e.key === 'Z') && !e.shiftKey) {
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    history.undo(historyHandlers);
+    return;
+  }
+
+  if (e.ctrlKey && e.shiftKey && (e.key === 'z' || e.key === 'Z')) {
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    history.redo(historyHandlers);
     return;
   }
 
@@ -350,7 +382,7 @@ window.addEventListener('keydown', (e) => {
     const sel = objManager.getSelected();
     if (sel) {
       const dupe = objManager.duplicateObject(sel);
-      undoStack.push({ type: 'add', mesh: dupe });
+      history.push({ type: 'add', mesh: dupe });
       if (currentTool !== 'select') { transformControl.attach(dupe); transformControl.setMode(currentTool); }
       updateUI();
     }
@@ -360,7 +392,7 @@ window.addEventListener('keydown', (e) => {
     if (currentMode === 'mesh') return;
     const sel = objManager.getSelected();
     if (sel) {
-      undoStack.push({ type: 'delete', mesh: sel });
+      history.push({ type: 'delete', mesh: sel });
       multiSelected.delete(sel);
       objManager.deleteSelected();
       transformControl.detach();
@@ -378,7 +410,7 @@ window.addEventListener('keydown', (e) => {
 document.querySelectorAll('.menu-item').forEach(item => {
   item.addEventListener('click', (e) => {
     const newMesh = objManager.addObject(e.currentTarget.dataset.type);
-    undoStack.push({ type: 'add', mesh: newMesh });
+    history.push({ type: 'add', mesh: newMesh });
     if (currentTool !== 'select') { transformControl.attach(newMesh); transformControl.setMode(currentTool); }
     addMenu.classList.remove('visible');
     updateUI();
@@ -486,7 +518,7 @@ document.getElementById('ctx-rename').addEventListener('click', () => {
 document.getElementById('ctx-duplicate').addEventListener('click', () => {
   if (!ctxTarget) return;
   const dupe = objManager.duplicateObject(ctxTarget);
-  undoStack.push({ type: 'add', mesh: dupe });
+  history.push({ type: 'add', mesh: dupe });
   if (currentTool !== 'select') { transformControl.attach(dupe); transformControl.setMode(currentTool); }
   hideContextMenu();
   updateUI();
@@ -494,7 +526,7 @@ document.getElementById('ctx-duplicate').addEventListener('click', () => {
 
 document.getElementById('ctx-delete').addEventListener('click', () => {
   if (!ctxTarget) return;
-  undoStack.push({ type: 'delete', mesh: ctxTarget });
+  history.push({ type: 'delete', mesh: ctxTarget });
   const wasSelected = objManager.getSelected() === ctxTarget;
   multiSelected.delete(ctxTarget);
   objManager.deleteObject(ctxTarget);
