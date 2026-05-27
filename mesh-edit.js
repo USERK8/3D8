@@ -303,6 +303,10 @@ export class MeshEditor {
     if (this._box.pending) { this._startBoxSelect(e); return; }
 
     const d = this._data;
+
+    // Apply selection immediately (needed to compute centroid for drag plane),
+    // but defer renderer.update to pointer up if no drag occurs — prevents flicker
+    // from double-update (down + up both triggering selection highlight rebuild).
     let hitSomething = false;
 
     if (d.subMode === 'vertex') {
@@ -311,7 +315,7 @@ export class MeshEditor {
         if (!e.shiftKey && !d.selVerts.has(vi)) { d.selVerts.clear(); d.selVerts.add(vi); }
         else if (e.shiftKey) d.selVerts.has(vi) ? d.selVerts.delete(vi) : d.selVerts.add(vi);
         d.dirty.selection = true;
-        hitSomething = d.selVerts.size > 0;
+        hitSomething = true;
       }
     } else if (d.subMode === 'edge') {
       const ei = this._pickEdge(e.clientX, e.clientY);
@@ -320,7 +324,7 @@ export class MeshEditor {
         if (!e.shiftKey && !d.selEdges.has(key)) { d.selEdges.clear(); d.selEdges.add(key); }
         else if (e.shiftKey) d.selEdges.has(key) ? d.selEdges.delete(key) : d.selEdges.add(key);
         d.dirty.selection = true;
-        hitSomething = d.selEdges.size > 0;
+        hitSomething = true;
       }
     } else if (d.subMode === 'face') {
       const fi = this._pickFace(e);
@@ -328,12 +332,9 @@ export class MeshEditor {
         if (!e.shiftKey && !d.selFaces.has(fi)) { d.selFaces.clear(); d.selFaces.add(fi); }
         else if (e.shiftKey) d.selFaces.has(fi) ? d.selFaces.delete(fi) : d.selFaces.add(fi);
         d.dirty.selection = true;
-        hitSomething = d.selFaces.size > 0;
+        hitSomething = true;
       }
     }
-
-    this._renderer.update(d);
-    this._updateGizmo();
 
     if (!hitSomething) {
       if (!e.shiftKey) { d.clearSelection(); this._renderer.update(d); this._hideGizmo(); }
@@ -410,7 +411,9 @@ export class MeshEditor {
 
     if (!this._isDragging) {
       this._data.discardSnap();
-      this._doClickSelect(e);
+      // Selection was already applied in _onPointerDown; just flush the render update now.
+      this._renderer.update(this._data);
+      this._updateGizmo();
     } else {
       const snap = this._data.takeSnap();
       if (snap) this._history.push({ type: 'mesh-edit', mesh: this._data.mesh, ...snap });
