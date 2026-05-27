@@ -581,30 +581,27 @@ export class MeshEditor {
     const d   = this._data;
     const geo = d.geo;
 
-    // Remember old vert count so we can identify cap verts after extrude
-    const oldVertCount = d.pos.count;
-
-    // Build new geometry with extrusion at distance=0 (cap sits flush on base)
-    const newGeo = extrudeFaces(geo, [...d.selFaces], d.quadGroups, 0);
+    // Build new geometry at distance=0; get back exact tri index ranges for cap/walls
+    const { geo: newGeo, capTriStart, capTriCount, wallTriStart, wallTriCount } = extrudeFaces(geo, [...d.selFaces], d.quadGroups, 0);
 
     // Swap geometry buffers onto the live mesh geometry
     geo.setAttribute('position', newGeo.attributes.position);
     geo.setIndex(newGeo.index);
     geo.computeVertexNormals();
 
-    // Refresh MeshData refs to point at the new buffers
+    // Refresh MeshData refs
     d.pos = geo.attributes.position;
     d.geo = geo;
 
-    // Rebuild topology so quad groups reflect the new index buffer
-    d.rebuildTopology();
+    // Rebuild topology — pass wall range so flat wall quads merge correctly
+    // even at distance=0 where wall tris are degenerate (zero area)
+    d.rebuildTopology(wallTriStart, wallTriCount);
 
-    // Select the cap faces — these are the quad groups whose verts are ALL
-    // in the new range [oldVertCount .. newVertCount-1] (the duplicated cap verts).
+    // Select cap faces — quad groups whose triangles fall entirely within capTriStart..capTriStart+capTriCount
+    const capTriEnd = capTriStart + capTriCount;
     d.selFaces.clear();
     d.quadGroups.forEach((group, gi) => {
-      // A cap face is one where every vert index >= oldVertCount
-      if (group.verts.every(vi => vi >= oldVertCount)) {
+      if (group.tris.every(fi => fi >= capTriStart && fi < capTriEnd)) {
         d.selFaces.add(gi);
       }
     });
