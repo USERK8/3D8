@@ -420,9 +420,12 @@ export function buildQuadGroups(geo) {
 }
 
 // ── Extrude faces ─────────────────────────────────────────────────────────
-// Takes a THREE.BufferGeometry and a set of logical face group indices,
-// duplicates their vertices, pushes them along the group normal,
-// and stitches side quads. Returns a new geometry.
+// Blender-style region extrude:
+//   1. Original selected-face verts stay in place → become the side-wall base
+//   2. New duplicated verts placed at distance along normal → become the cap
+//   3. Non-selected faces are untouched (keep original indices)
+//   4. Selected faces remap to the duplicated (cap) verts
+//   5. Boundary edges get quad side-walls stitching base → cap
 export function extrudeFaces(geo, selectedGroups, quadGroups, distance = 0) {
   const oldPos   = geo.attributes.position;
   const oldIndex = geo.index;
@@ -430,91 +433,104 @@ export function extrudeFaces(geo, selectedGroups, quadGroups, distance = 0) {
 
   const fc = oldIndex.count / 3 | 0;
 
-  // Collect all triangle indices that belong to selected groups
+  // Collect triangle indices belonging to selected groups
   const selTris = new Set();
-  selectedGroups.forEach(gi => quadGroups[gi].tris.forEach(fi => selTris.add(fi)));
-
-  // Collect all unique vertex indices used by selected faces
-  const selVerts = new Set();
-  selTris.forEach(fi => {
-    selVerts.add(oldIndex.getX(fi*3));
-    selVerts.add(oldIndex.getX(fi*3+1));
-    selVerts.add(oldIndex.getX(fi*3+2));
+  selectedGroups.forEach(gi => {
+    if (quadGroups[gi]) quadGroups[gi].tris.forEach(fi => selTris.add(fi));
   });
 
-  // Compute average extrude normal from selected groups
+  // Collect unique vertex indices used by selected faces
+  const selVerts = new Set();
+  selTris.forEach(fi => {
+    selVerts.add(oldIndex.getX(fi * 3));
+    selVerts.add(oldIndex.getX(fi * 3 + 1));
+    selVerts.add(oldIndex.getX(fi * 3 + 2));
+  });
+
+  // Average extrude normal from selected groups
   let nx = 0, ny = 0, nz = 0;
   selectedGroups.forEach(gi => {
+    if (!quadGroups[gi]) return;
     const n = quadGroups[gi].normal;
     nx += n.x; ny += n.y; nz += n.z;
   });
   const nlen = Math.hypot(nx, ny, nz) || 1;
   nx /= nlen; ny /= nlen; nz /= nlen;
 
-  // Build new position array:
-  // [0..oldCount-1] = original verts
-  // [oldCount..] = duplicated selected verts pushed by distance
+  // New position buffer:
+  //   [0 .. oldCount-1]          = all original verts (unchanged)
+  //   [oldCount .. oldCount+N-1] = duplicated cap verts (pushed along normal)
   const oldCount  = oldPos.count;
   const newCount  = oldCount + selVerts.size;
   const newPosArr = new Float32Array(newCount * 3);
 
-  // Copy original
+  // Copy every original vert unchanged
   for (let i = 0; i < oldCount * 3; i++) newPosArr[i] = oldPos.array[i];
 
-  // Duplicate selected verts, shifted along normal
-  const oldToNew = new Map(); // old vi → new vi
+  // Duplicate selected verts → cap (offset by distance along normal)
+  const oldToNew = new Map(); // old vi → new (cap) vi
   let insertIdx  = oldCount;
   selVerts.forEach(vi => {
     oldToNew.set(vi, insertIdx);
-    newPosArr[insertIdx*3]   = oldPos.getX(vi) + nx * distance;
-    newPosArr[insertIdx*3+1] = oldPos.getY(vi) + ny * distance;
-    newPosArr[insertIdx*3+2] = oldPos.getZ(vi) + nz * distance;
+    newPosArr[insertIdx * 3]     = oldPos.getX(vi) + nx * distance;
+    newPosArr[insertIdx * 3 + 1] = oldPos.getY(vi) + ny * distance;
+    newPosArr[insertIdx * 3 + 2] = oldPos.getZ(vi) + nz * distance;
     insertIdx++;
   });
 
-  // Build new index array:
-  // • Non-selected faces: unchanged
-  // • Selected faces: remap to new (extruded) verts
-  // • Side walls: for each boundary edge of selection, add two triangles
+  // Build index array
+  // Non-selected faces → original indices (base stays closed)
+  // Selected faces     → remapped to cap indices
   const newTriangles = [];
 
   for (let fi = 0; fi < fc; fi++) {
-    const a = oldIndex.getX(fi*3), b = oldIndex.getX(fi*3+1), c = oldIndex.getX(fi*3+2);
+    const a = oldIndex.getX(fi * 3);
+    const b = oldIndex.getX(fi * 3 + 1);
+    const c = oldIndex.getX(fi * 3 + 2);
     if (selTris.has(fi)) {
-      // Top face — use new extruded verts
+      // Cap face — use duplicated verts
       newTriangles.push(oldToNew.get(a), oldToNew.get(b), oldToNew.get(c));
     } else {
+      // Unselected face — keep as-is
       newTriangles.push(a, b, c);
     }
   }
 
-  // Side walls: find boundary edges (edges where one tri is selected, other is not)
-  const edgeMap = new Map();
+  // Side walls — fast O(n) approach with a directed-edge map.
+  // For every edge walked in winding order (a→b), store which face owns it.
+  // A boundary edge is one where the directed edge a→b belongs to a selected tri
+  // but b→a is NOT owned by another selected tri (i.e. it borders an unselected
+  // face or is a mesh border). These edges get a quad wall.
+  const dirEdgeOwner = new Map(); // "a_b" → fi (directed)
   for (let fi = 0; fi < fc; fi++) {
     for (let j = 0; j < 3; j++) {
-      const a = oldIndex.getX(fi*3+j), b = oldIndex.getX(fi*3+(j+1)%3);
-      const k = a < b ? `${a}_${b}` : `${b}_${a}`;
-      if (!edgeMap.has(k)) edgeMap.set(k, { a, b, tris: [] });
-      edgeMap.get(k).tris.push(fi);
+      const a = oldIndex.getX(fi * 3 + j);
+      const b = oldIndex.getX(fi * 3 + (j + 1) % 3);
+      dirEdgeOwner.set(`${a}_${b}`, fi);
     }
   }
 
-  edgeMap.forEach(({ a, b, tris }) => {
-    const hasSel   = tris.some(fi => selTris.has(fi));
-    const hasUnsel = tris.some(fi => !selTris.has(fi));
-    if (!hasSel || !hasUnsel) return; // not a boundary edge
-    // Stitch: bottom edge a-b (original) → top edge newA-newB (extruded)
-    const na2 = oldToNew.get(a), nb2 = oldToNew.get(b);
-    if (na2 === undefined || nb2 === undefined) return;
-    // Two triangles forming a quad wall
-    newTriangles.push(a, b, na2);
-    newTriangles.push(b, nb2, na2);
-  });
+  for (let fi = 0; fi < fc; fi++) {
+    if (!selTris.has(fi)) continue;
+    for (let j = 0; j < 3; j++) {
+      const a  = oldIndex.getX(fi * 3 + j);
+      const b  = oldIndex.getX(fi * 3 + (j + 1) % 3);
+      // The opposite directed edge b→a
+      const oppOwner = dirEdgeOwner.get(`${b}_${a}`);
+      // Boundary = opposite edge not owned by a selected tri
+      if (oppOwner !== undefined && selTris.has(oppOwner)) continue;
+      const na2 = oldToNew.get(a);
+      const nb2 = oldToNew.get(b);
+      if (na2 === undefined || nb2 === undefined) continue;
+      // Quad wall stitching base (a,b) to cap (na2,nb2)
+      // Winding follows selected-face outward normal
+      newTriangles.push(a,  nb2, b  );
+      newTriangles.push(a,  na2, nb2);
+    }
+  }
 
-  // Build new geometry
   const newGeo = geo.clone();
-  const newPosAttr = new THREE.Float32BufferAttribute(newPosArr, 3);
-  newGeo.setAttribute('position', newPosAttr);
+  newGeo.setAttribute('position', new THREE.Float32BufferAttribute(newPosArr, 3));
   newGeo.setIndex(newTriangles);
   newGeo.computeVertexNormals();
   return newGeo;
