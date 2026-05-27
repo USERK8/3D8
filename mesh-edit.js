@@ -106,6 +106,12 @@ export class MeshEditor {
 
     this._origSide        = mesh.material.side;
     this._origDepthWrite  = mesh.material.depthWrite;
+    this._origColor       = mesh.material.color.clone();
+    this._origEmissive    = mesh.material.emissive ? mesh.material.emissive.clone() : null;
+    // Restore original grey so the mesh doesn't appear blue in mesh edit mode
+    if (mesh.userData.originalColor) mesh.material.color.copy(mesh.userData.originalColor);
+    if (mesh.userData.originalEmissive && mesh.material.emissive) mesh.material.emissive.copy(mesh.userData.originalEmissive);
+    else if (mesh.material.emissive) mesh.material.emissive.set(0x000000);
     mesh.material.side        = THREE.DoubleSide;
     mesh.material.depthWrite  = true;
     mesh.material.needsUpdate = true;
@@ -127,6 +133,9 @@ export class MeshEditor {
     const mesh = this._data.mesh;
     mesh.material.side        = this._origSide       ?? THREE.FrontSide;
     mesh.material.depthWrite  = this._origDepthWrite ?? true;
+    // Re-apply the blue selection color for layout mode
+    if (this._origColor) mesh.material.color.copy(this._origColor);
+    if (this._origEmissive && mesh.material.emissive) mesh.material.emissive.copy(this._origEmissive);
     mesh.material.needsUpdate = true;
 
     this._renderer.dispose();
